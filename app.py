@@ -184,21 +184,21 @@ def verstuur_email(onderwerp, inhoud):
 
 def main():
     logging.info("--- Cron Job Gestart ---")
+    
+    # Controleer of de variabelen zijn ingesteld
     if not all([USER, PASS]):
-        logging.critical("FATALE FOUT: LIS_USER of LIS_PASS niet ingesteld!")
-        return
+        logging.critical("FATALE FOUT: LIS_USER of LIS_PASS niet ingesteld in Environment Variables!")
+        sys.exit(1) # BELANGRIJK: Stopt het script met een foutcode
 
     session = requests.Session()
     if not login(session):
         logging.error("Inloggen mislukt. Script stopt.")
-        return
+        sys.exit(1) # Stopt het script ook met een foutcode
 
     nieuwe_bestellingen = haal_bestellingen_op(session)
-    
-    # HIER IS DE FIX: 'new_bestellingen' is veranderd naar 'nieuwe_bestellingen'
     if not nieuwe_bestellingen:
         logging.warning("Geen nieuwe bestellingen opgehaald. Script stopt.")
-        return
+        return # Hier is een normale stop prima, want dit kan gebeuren.
     logging.info(f"{len(nieuwe_bestellingen)} bestellingen opgehaald.")
 
     # TAAK 1: CONTROLEER OP WIJZIGINGEN
