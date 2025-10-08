@@ -194,7 +194,9 @@ def main():
         return
 
     nieuwe_bestellingen = haal_bestellingen_op(session)
-    if not new_bestellingen:
+    
+    # HIER IS DE FIX: 'new_bestellingen' is veranderd naar 'nieuwe_bestellingen'
+    if not nieuwe_bestellingen:
         logging.warning("Geen nieuwe bestellingen opgehaald. Script stopt.")
         return
     logging.info(f"{len(nieuwe_bestellingen)} bestellingen opgehaald.")
@@ -260,6 +262,3 @@ def main():
             f.write(current_key)
             
     logging.info("--- Cron Job Voltooid ---")
-
-if __name__ == "__main__":
-    main()
