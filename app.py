@@ -219,6 +219,16 @@ def verstuur_email(onderwerp, inhoud):
 # --- HOOFDFUNCTIE ---
 def main():
     logging.info("--- Cron Job Gestart ---")
+
+    # --- TEST-EMAIL STAP ---
+    logging.info("Poging tot het versturen van een test-e-mail...")
+    verstuur_email(
+        "Render Cron Job Test", 
+        f"Dit is een testbericht om de e-mailconfiguratie te verifiëren.\nVerzonden op: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    logging.info("Test-e-mail functie aangeroepen. Controleer je inbox en de logs op eventuele fouten.")
+    # --- EINDE TEST-EMAIL STAP ---
+    
     if JSONBIN_BIN_ID.startswith("PLAK_HIER"):
         logging.critical("FATALE FOUT: De JSONBIN_BIN_ID in het app.py script is niet vervangen!")
         return
