@@ -13,7 +13,7 @@ import pytz
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Inloggegevens, e-mailinstellingen en jsonbin.io sleutels uit Render Environment Variables
+# Environment Variables uit Render
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 SMTP_SERVER = os.environ.get('SMTP_SERVER')
@@ -24,55 +24,44 @@ ONTVANGER_EMAIL = os.environ.get('ONTVANGER_EMAIL')
 JSONBIN_API_KEY = os.environ.get('JSONBIN_API_KEY')
 
 # BELANGRIJK: VERVANG DE VOLGENDE REGEL MET JE ECHTE BIN ID VAN JSONBIN.IO
-JSONBIN_BIN_ID = "VERVANG_MIJ_MET_JE_ECHTE_BIN_ID"
-# Deze ID vind je in de URL nadat je een nieuwe 'private bin' hebt aangemaakt op jsonbin.io
+JSONBIN_BIN_ID = "68e7ee0cd0ea881f409b6804"
 
-# --- JSONBIN.IO FUNCTIES ---
+# --- JSONBIN.IO FUNCTIES (vereenvoudigd) ---
 
-def load_data_from_jsonbin():
-    """Haalt de vorige lijst met bestellingen op uit de online 'kluis'."""
-    if not JSONBIN_API_KEY or JSONBIN_BIN_ID == "VERVANG_MIJ_MET_JE_ECHTE_BIN_ID":
-        logging.error("jsonbin.io configuratie ontbreekt (API Key of Bin ID).")
-        return []
-        
-    headers = {'X-Master-Key': JSONBIN_API_KEY}
+def load_state_from_jsonbin():
+    """Haalt de volledige staat (bestellingen en rapport-key) op uit één bin."""
+    if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
+        logging.error("jsonbin.io configuratie onvolledig (API Key of Bin ID).")
+        return None
+    
+    headers = {'X-Master-Key': JSONBIN_API_KEY, 'X-Bin-Meta': 'false'}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
-        logging.info("Oude data succesvol geladen van jsonbin.io.")
+        logging.info("Staat succesvol geladen van jsonbin.io.")
         return res.json()
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-             logging.warning("jsonbin.io 'bin' niet gevonden. Eerste run wordt aangenomen.")
-             return []
-        logging.error(f"Fout bij het laden van data van jsonbin.io: {e.response.status_code} {e.response.text}")
-        return []
     except Exception as e:
-        logging.error(f"Onverwachte fout bij laden van jsonbin.io data: {e}")
-        return []
+        logging.error(f"Fout bij laden van staat van jsonbin.io: {e}")
+        return None
 
-def save_data_to_jsonbin(data):
-    """Slaat de nieuwe lijst met bestellingen op in de online 'kluis'."""
-    if not JSONBIN_API_KEY or JSONBIN_BIN_ID == "VERVANG_MIJ_MET_JE_ECHTE_BIN_ID":
-        logging.error("jsonbin.io configuratie ontbreekt, data niet opgeslagen.")
+def save_state_to_jsonbin(state):
+    """Slaat de volledige staat op in één bin."""
+    if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
+        logging.error("jsonbin.io configuratie onvolledig, staat niet opgeslagen.")
         return
 
-    headers = {
-        'Content-Type': 'application/json',
-        'X-Master-Key': JSONBIN_API_KEY
-    }
+    headers = {'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
     try:
-        res = requests.put(url, headers=headers, data=json.dumps(data), timeout=10)
+        res = requests.put(url, headers=headers, data=json.dumps(state), timeout=15)
         res.raise_for_status()
-        logging.info("Nieuwe basislijn succesvol opgeslagen naar jsonbin.io.")
+        logging.info("Nieuwe staat succesvol opgeslagen naar jsonbin.io.")
     except Exception as e:
-        logging.error(f"Fout bij het opslaan van data naar jsonbin.io: {e}")
+        logging.error(f"Fout bij opslaan van staat naar jsonbin.io: {e}")
 
 
-# --- SCRAPER FUNCTIES ---
-
+# --- SCRAPER FUNCTIES (ongewijzigd) ---
 def login(session):
     try:
         logging.info("Loginpoging gestart...")
@@ -230,12 +219,21 @@ def verstuur_email(onderwerp, inhoud):
 # --- HOOFDFUNCTIE ---
 def main():
     logging.info("--- Cron Job Gestart ---")
-    if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID != "VERVANG_MIJ_MET_JE_ECHTE_BIN_ID"]):
-        logging.critical("FATALE FOUT: Essentiële Environment Variables (LIS_USER, LIS_PASS, JSONBIN_API_KEY) of de JSONBIN_BIN_ID in het script zijn niet ingesteld!")
+    if JSONBIN_BIN_ID.startswith("PLAK_HIER"):
+        logging.critical("FATALE FOUT: De JSONBIN_BIN_ID in het app.py script is niet vervangen!")
+        return
+    if not all([USER, PASS, JSONBIN_API_KEY]):
+        logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld in Render!")
         return
 
-    # 1. Laad de data van de vorige run uit de cloud
-    oude_bestellingen = load_data_from_jsonbin()
+    # 1. Laad de volledige staat van de vorige run uit de cloud
+    vorige_staat = load_state_from_jsonbin()
+    if vorige_staat is None:
+        # Als er niets is, begin met een lege staat
+        vorige_staat = {"bestellingen": [], "last_report_key": ""}
+    
+    oude_bestellingen = vorige_staat.get("bestellingen", [])
+    last_report_key = vorige_staat.get("last_report_key", "")
 
     # 2. Log in en haal nieuwe data op
     session = requests.Session()
@@ -261,38 +259,37 @@ def main():
     else:
         logging.info("Eerste run, geen oude data om mee te vergelijken. Basislijn wordt opgeslagen.")
 
-    # 4. Sla de nieuwe data op voor de volgende run in de cloud
-    save_data_to_jsonbin(nieuwe_bestellingen)
-
-    # 5. Stuur snapshot op vaste tijden
+    # 4. Stuur snapshot op vaste tijden
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
     report_times = [(4, 0), (5, 30), (12, 0), (13, 30), (20, 0), (21, 30)]
     
-    minute_slot = '00' if nu_brussels.minute < 30 else '30'
-    current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}:{minute_slot}"
+    current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}"
     
-    last_report_key = ""
-    # We lezen het laatst opgeslagen rapport ID uit een aparte bin
-    # Dit is niet geïmplementeerd om het simpel te houden, maar is een mogelijke verbetering
-
     should_send_report = False
     for report_hour, report_minute in report_times:
-        # Check of de huidige tijd binnen 15 minuten *na* het rapport tijdstip valt
         if nu_brussels.hour == report_hour and report_minute <= nu_brussels.minute < report_minute + 15:
             should_send_report = True
             break
     
-    if should_send_report:
+    if should_send_report and current_key != last_report_key:
         logging.info(f"Tijd voor gepland rapport: {nu_brussels.strftime('%H:%M')}")
         snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
         inhoud = format_snapshot_email(snapshot_data)
         onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
         verstuur_email(onderwerp, inhoud)
-        # Hier zouden we normaal de current_key opslaan om dubbele mails te voorkomen
+        last_report_key = current_key # Update de key zodat we hem kunnen opslaan
+    
+    # 5. Sla de nieuwe staat op voor de volgende run in de cloud
+    nieuwe_staat = {
+        "bestellingen": nieuwe_bestellingen,
+        "last_report_key": last_report_key
+    }
+    save_state_to_jsonbin(nieuwe_staat)
     
     logging.info("--- Cron Job Voltooid ---")
 
 if __name__ == "__main__":
     main()
+
