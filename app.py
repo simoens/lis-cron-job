@@ -1,4 +1,3 @@
-import sys
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -23,12 +22,11 @@ EMAIL_USER = os.environ.get('EMAIL_USER')
 EMAIL_PASS = os.environ.get('EMAIL_PASS')
 ONTVANGER_EMAIL = os.environ.get('ONTVANGER_EMAIL')
 
-# Pad naar de databestanden op Render's gratis persistent disk
+# Pad naar de databestanden
 DATA_FILE_PATH = '/var/data/oude_bestellingen.json'
 LAST_REPORT_FILE_PATH = '/var/data/laatste_rapport.txt'
 
-# --- FUNCTIES ---
-
+# --- FUNCTIES (ongewijzigd) ---
 def login(session):
     try:
         logging.info("Loginpoging gestart...")
@@ -61,7 +59,7 @@ def haal_bestellingen_op(session):
         response = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx")
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
-        table = soup.find('table', id='ctl00_ContentPlaceHolder1$ctl01_list_gv')
+        table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         if table is None: return []
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20}
         bestellingen = []
@@ -169,7 +167,7 @@ def format_snapshot_email(snapshot_data):
 def verstuur_email(onderwerp, inhoud):
     if not all([SMTP_SERVER, EMAIL_USER, EMAIL_PASS, ONTVANGER_EMAIL]):
         logging.error("E-mail niet verstuurd: SMTP-instellingen ontbreken in Environment Variables.")
-        return
+        return False
     try:
         msg = MIMEText(inhoud, 'plain', 'utf-8')
         msg['Subject'] = onderwerp
@@ -180,29 +178,40 @@ def verstuur_email(onderwerp, inhoud):
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, ONTVANGER_EMAIL, msg.as_string())
         logging.info(f"E-mail succesvol verzonden naar {ONTVANGER_EMAIL}")
+        return True
     except Exception as e:
         logging.error(f"E-mail versturen mislukt: {e}")
+        return False
 
 def main():
-    logging.info("--- Cron Job Gestart ---")
+    logging.info("--- Diagnostische Cron Job Gestart ---")
     
-    # Controleer of de variabelen zijn ingesteld
+    # --- DIAGNOSTISCHE STAP 1: Verstuur een testmail ---
+    logging.info("Poging tot het versturen van een test-e-mail...")
+    test_geslaagd = verstuur_email("Render Cron Job Test", "Dit is een testbericht om de e-mailconfiguratie te verifiëren.")
+    if not test_geslaagd:
+        logging.critical("KRITISCHE FOUT: De test-e-mail kon niet worden verstuurd. Controleer je SMTP Environment Variables!")
+        return # Stop het script hier, verder gaan heeft geen zin.
+    logging.info("Test-e-mail succesvol (of zonder fouten) verstuurd.")
+
+    # --- Normale script logica ---
     if not all([USER, PASS]):
-        logging.critical("FATALE FOUT: LIS_USER of LIS_PASS niet ingesteld in Environment Variables!")
-        sys.exit(1) # BELANGRIJK: Stopt het script met een foutcode
+        logging.critical("FATALE FOUT: LIS_USER of LIS_PASS niet ingesteld!")
+        return
 
     session = requests.Session()
     if not login(session):
         logging.error("Inloggen mislukt. Script stopt.")
-        sys.exit(1) # Stopt het script ook met een foutcode
+        return
 
     nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen:
         logging.warning("Geen nieuwe bestellingen opgehaald. Script stopt.")
-        return # Hier is een normale stop prima, want dit kan gebeuren.
+        return
     logging.info(f"{len(nieuwe_bestellingen)} bestellingen opgehaald.")
 
-    # TAAK 1: CONTROLEER OP WIJZIGINGEN
+    # --- TAAK 1: CONTROLEER OP WIJZIGINGEN ---
+    # ... (code blijft hetzelfde) ...
     oude_bestellingen = []
     if os.path.exists(DATA_FILE_PATH):
         try:
@@ -214,14 +223,15 @@ def main():
     if oude_bestellingen:
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
-            logging.info(f"{len(wijzigingen)} wijziging(en) gevonden!")
+            logging.info(f"VERGELIJKING: {len(wijzigingen)} wijziging(en) gevonden die door de filters kwamen!")
             inhoud = format_wijzigingen_email(wijzigingen)
             verstuur_email(f"LIS Update: {len(wijzigingen)} wijziging(en)", inhoud)
         else:
-            logging.info("Geen relevante wijzigingen gevonden.")
+            logging.info("VERGELIJKING: Geen relevante wijzigingen gevonden na filtering.")
     else:
-        logging.info("Eerste run, basislijn wordt opgeslagen.")
+        logging.info("VERGELIJKING: Eerste run, geen oude data om mee te vergelijken.")
 
+    # Sla de nieuwe data op
     try:
         os.makedirs(os.path.dirname(DATA_FILE_PATH), exist_ok=True)
         with open(DATA_FILE_PATH, 'w') as f:
@@ -230,9 +240,11 @@ def main():
     except Exception as e:
         logging.error(f"Kon databestand niet opslaan: {e}")
 
-    # TAAK 2: STUUR SNAPSHOT OP VASTE TIJDEN
+
+    # --- TAAK 2: STUUR SNAPSHOT OP VASTE TIJDEN (met extra logging) ---
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
+    logging.info(f"TIJDCHECK: Huidige tijd in Brussel: {nu_brussels.strftime('%H:%M')}")
     
     report_times = [(4, 0), (5, 30), (12, 0), (13, 30), (20, 0), (21, 30)]
     
@@ -252,8 +264,11 @@ def main():
                 should_send_report = True
                 break
     
+    logging.info(f"TIJDCHECK: Moet rapport verstuurd worden? {should_send_report}")
+    logging.info(f"TIJDCHECK: Is dit een nieuwe tijdslot? {current_key != last_report_key}")
+
     if should_send_report and current_key != last_report_key:
-        logging.info(f"Tijd voor gepland rapport: {nu_brussels.strftime('%H:%M')}")
+        logging.info("BESLISSING: Ja, tijd voor gepland rapport.")
         snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
         inhoud = format_snapshot_email(snapshot_data)
         onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
@@ -261,5 +276,10 @@ def main():
         
         with open(LAST_REPORT_FILE_PATH, 'w') as f:
             f.write(current_key)
+    else:
+        logging.info("BESLISSING: Nee, geen gepland rapport nodig op dit moment.")
             
     logging.info("--- Cron Job Voltooid ---")
+
+if __name__ == "__main__":
+    main()
