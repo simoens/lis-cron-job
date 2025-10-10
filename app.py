@@ -24,12 +24,11 @@ ONTVANGER_EMAIL = os.environ.get('ONTVANGER_EMAIL')
 JSONBIN_API_KEY = os.environ.get('JSONBIN_API_KEY')
 
 # BELANGRIJK: VERVANG DE VOLGENDE REGEL MET JE ECHTE BIN ID VAN JSONBIN.IO
-JSONBIN_BIN_ID = "68e7ee0cd0ea881f409b6804"
+JSONBIN_BIN_ID = "PLAK_HIER_JE_ENIGE_ECHTE_BIN_ID"
 
-# --- JSONBIN.IO FUNCTIES (vereenvoudigd) ---
+# --- JSONBIN.IO FUNCTIES ---
 
 def load_state_from_jsonbin():
-    """Haalt de volledige staat (bestellingen en rapport-key) op uit één bin."""
     if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
         logging.error("jsonbin.io configuratie onvolledig (API Key of Bin ID).")
         return None
@@ -46,7 +45,6 @@ def load_state_from_jsonbin():
         return None
 
 def save_state_to_jsonbin(state):
-    """Slaat de volledige staat op in één bin."""
     if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
         logging.error("jsonbin.io configuratie onvolledig, staat niet opgeslagen.")
         return
@@ -61,7 +59,7 @@ def save_state_to_jsonbin(state):
         logging.error(f"Fout bij opslaan van staat naar jsonbin.io: {e}")
 
 
-# --- SCRAPER FUNCTIES (ongewijzigd) ---
+# --- SCRAPER FUNCTIES ---
 def login(session):
     try:
         logging.info("Loginpoging gestart...")
@@ -169,51 +167,67 @@ def format_wijzigingen_email(wijzigingen):
     return "\n\n".join(body)
 
 def filter_snapshot_schepen(bestellingen):
+    """Filtert de schepen voor de overzichtsmail op basis van de ETA-regel en de Loods-regel."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
-    grens_in_verleden = nu - timedelta(hours=8)
-    grens_in_toekomst = nu + timedelta(hours=8)
+    grens_in_toekomst_eta = nu + timedelta(hours=8)
+
     for b in bestellingen:
         try:
-            if b.get("Besteltijd"):
-                besteltijd = datetime.strptime(b.get("Besteltijd"), "%d/%m/%y %H:%M")
-                if b.get("Type") == "U" and nu <= besteltijd <= grens_uit_toekomst: gefilterd["UITGAAND"].append(b)
-                elif b.get("Type") == "I" and grens_in_verleden <= besteltijd <= grens_in_toekomst: gefilterd["INKOMEND"].append(b)
-        except (ValueError, TypeError): continue
+            # --- NIEUWE FILTER ---
+            # Sla dit schip over als het veld "Loods" leeg is.
+            if not b.get('Loods', '').strip():
+                continue
+
+            besteltijd_str = b.get("Besteltijd")
+            if not besteltijd_str:
+                continue
+            
+            besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
+
+            if b.get("Type") == "U":
+                if nu <= besteltijd <= grens_uit_toekomst:
+                    gefilterd["UITGAAND"].append(b)
+
+            elif b.get("Type") == "I":
+                entry_point = b.get('Entry Point', '')
+                eta_dt = None
+
+                if "KN: Steenbank" in entry_point:
+                    eta_dt = besteltijd + timedelta(hours=7)
+                elif "KW: Wandelaar" in entry_point:
+                    eta_dt = besteltijd + timedelta(hours=6)
+
+                if eta_dt and nu <= eta_dt <= grens_in_toekomst_eta:
+                    b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                    gefilterd["INKOMEND"].append(b)
+
+        except (ValueError, TypeError):
+            continue
+            
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
     """Formatteert de overzichtsmail, inclusief de berekende ETA."""
-    body = "--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---\n"
+    body = "--- BINNENKOMENDE SCHEPEN (Berekende ETA binnen 8u & Loods toegewezen) ---\n"
     if snapshot_data.get('INKOMEND'):
+        snapshot_data['INKOMEND'].sort(key=lambda x: x.get('berekende_eta', ''))
         for schip in snapshot_data['INKOMEND']:
             naam = schip.get('Schip', 'N/A').ljust(30)
             besteltijd_str = schip.get('Besteltijd', 'N/A')
             loods = schip.get('Loods', 'N/A')
-            entry_point = schip.get('Entry Point', '')
-            eta_str = "N/A"
-
-            try:
-                besteltijd_dt = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-                if "KN: Steenbank" in entry_point:
-                    eta_dt = besteltijd_dt + timedelta(hours=7)
-                    eta_str = eta_dt.strftime("%d/%m/%y %H:%M")
-                elif "KW: Wandelaar" in entry_point:
-                    eta_dt = besteltijd_dt + timedelta(hours=6)
-                    eta_str = eta_dt.strftime("%d/%m/%y %H:%M")
-            except (ValueError, TypeError):
-                # Als besteltijd parsen mislukt, blijft eta_str "N/A"
-                pass
+            eta_str = schip.get('berekende_eta', 'N/A')
             
             body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | Berekende ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
     
-    body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---\n"
+    body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u & Loods toegewezen) ---\n"
     if snapshot_data.get('UITGAAND'):
+        snapshot_data['UITGAAND'].sort(key=lambda x: x.get('Besteltijd', ''))
         for schip in snapshot_data['UITGAAND']:
-            body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A')}\n"
+            body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A')} | Loods: {schip.get('Loods', 'N/A')}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
     return body
@@ -238,7 +252,6 @@ def verstuur_email(onderwerp, inhoud):
 # --- HOOFDFUNCTIE ---
 def main():
     logging.info("--- Cron Job Gestart ---")
-  
     if JSONBIN_BIN_ID.startswith("PLAK_HIER"):
         logging.critical("FATALE FOUT: De JSONBIN_BIN_ID in het app.py script is niet vervangen!")
         return
@@ -249,7 +262,6 @@ def main():
     # 1. Laad de volledige staat van de vorige run uit de cloud
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
-        # Als er niets is, begin met een lege staat
         vorige_staat = {"bestellingen": [], "last_report_key": ""}
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
@@ -283,7 +295,7 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    report_times = [(1, 0), (4, 0), (5, 30), (9, 0), (12, 0), (13, 30), (17, 0), (20, 0), (21, 30)]
+    report_times = [(4, 0), (5, 30), (12, 0), (13, 30), (20, 0), (21, 30)]
     
     current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}"
     
@@ -299,7 +311,7 @@ def main():
         inhoud = format_snapshot_email(snapshot_data)
         onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
         verstuur_email(onderwerp, inhoud)
-        last_report_key = current_key # Update de key zodat we hem kunnen opslaan
+        last_report_key = current_key
     
     # 5. Sla de nieuwe staat op voor de volgende run in de cloud
     nieuwe_staat = {
