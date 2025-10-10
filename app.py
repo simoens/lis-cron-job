@@ -184,15 +184,34 @@ def filter_snapshot_schepen(bestellingen):
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
+    """Formatteert de overzichtsmail, inclusief de berekende ETA."""
     body = "--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---\n"
-    if snapshot_data['INKOMEND']:
+    if snapshot_data.get('INKOMEND'):
         for schip in snapshot_data['INKOMEND']:
-            body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A')}\n"
+            naam = schip.get('Schip', 'N/A').ljust(30)
+            besteltijd_str = schip.get('Besteltijd', 'N/A')
+            loods = schip.get('Loods', 'N/A')
+            entry_point = schip.get('Entry Point', '')
+            eta_str = "N/A"
+
+            try:
+                besteltijd_dt = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
+                if "KN: Steenbank" in entry_point:
+                    eta_dt = besteltijd_dt + timedelta(hours=7)
+                    eta_str = eta_dt.strftime("%d/%m/%y %H:%M")
+                elif "KW: Wandelaar" in entry_point:
+                    eta_dt = besteltijd_dt + timedelta(hours=6)
+                    eta_str = eta_dt.strftime("%d/%m/%y %H:%M")
+            except (ValueError, TypeError):
+                # Als besteltijd parsen mislukt, blijft eta_str "N/A"
+                pass
+            
+            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | Berekende ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
     
     body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---\n"
-    if snapshot_data['UITGAAND']:
+    if snapshot_data.get('UITGAAND'):
         for schip in snapshot_data['UITGAAND']:
             body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A')}\n"
     else:
