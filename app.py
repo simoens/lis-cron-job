@@ -283,7 +283,7 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    report_times = [(4, 0), (5, 30), (12, 0), (13, 30), (20, 0), (21, 30)]
+    report_times = [(1, 0), (4, 0), (5, 30), (9, 0), (12, 0), (13, 30), (17, 0), (20, 0), (21, 30)]
     
     current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}"
     
