@@ -1,1 +1,55 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="300"> <!-- Pagina elke 5 minuten verversen -->
+    <title>LIS Scraper Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f0f2f5; color: #1c1e21; }
+        .container { max-width: 900px; margin: 2em auto; }
+        .card { background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2em; overflow: hidden; }
+        .card-header { background-color: #e7f3ff; padding: 12px 16px; border-bottom: 1px solid #dddfe2; }
+        .card-header h2 { margin: 0; font-size: 1.2em; color: #1877f2; }
+        .card-header .timestamp { font-size: 0.8em; color: #606770; }
+        .card-body { padding: 16px; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #f5f6f7; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.9em; }
+        h1 { text-align: center; color: #333; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LIS Dashboard</h1>
+
+        <!-- Sectie voor het laatste overzicht -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Laatste LIS Overzicht</h2>
+                <div class="timestamp">Verstuurd op: {{ snapshot.timestamp }}</div>
+            </div>
+            <div class="card-body">
+                <pre>{{ snapshot.content }}</pre>
+            </div>
+        </div>
+
+        <!-- Sectie voor de laatste wijzigingen -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Recente Wijzigingen (max 10)</h2>
+            </div>
+            <div class="card-body">
+                {% for change in changes %}
+                    <div class="change-item" style="border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em;">
+                        <div class="timestamp"><strong>{{ change.onderwerp }}</strong> - verstuurd op: {{ change.timestamp }}</div>
+                        <pre>{{ change.content }}</pre>
+                    </div>
+                {% else %}
+                    <p>Nog geen wijzigingen gedetecteerd.</p>
+                {% endfor %}
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
+
 
