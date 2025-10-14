@@ -7,13 +7,55 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 import json
-from collections import defaultdict
+from collections import defaultdict, deque
 import pytz
+from flask import Flask, render_template, request, abort
+import threading
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Environment Variables uit Render
+# --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
+# We gebruiken een thread-safe dictionary om de staat bij te houden.
+# De deque zorgt ervoor dat de lijst van wijzigingen automatisch beperkt blijft tot 10.
+app_state = {
+    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content": "Wachten op de eerste run..."},
+    "change_history": deque(maxlen=10) # Houdt de laatste 10 wijzigingen bij
+}
+data_lock = threading.Lock() # Een slot om de state veilig te kunnen bijwerken
+
+# --- FLASK APPLICATIE ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    """Toont de webpagina met de opgeslagen e-mailinhoud."""
+    with data_lock:
+        return render_template('index.html',
+                               snapshot=app_state["latest_snapshot"],
+                               changes=list(app_state["change_history"]))
+
+@app.route('/trigger-run')
+def trigger_run():
+    """
+    Geheime URL die door de externe cron job (cron-job.org) wordt aangeroepen.
+    Dit activeert één volledige run van het scraper-script.
+    """
+    secret = request.args.get('secret')
+    # Vergelijk de 'secret' uit de URL met de geheime sleutel in je Render Environment.
+    if secret != os.environ.get('SECRET_KEY'):
+        logging.warning("Mislukte poging om /trigger-run aan te roepen met ongeldige secret key.")
+        abort(403) # Verboden toegang
+
+    logging.info("================== Externe Trigger Ontvangen: Run Start ==================")
+    try:
+        main()
+        return "OK: Scraper run voltooid.", 200
+    except Exception as e:
+        logging.critical(f"FATALE FOUT tijdens de getriggerde run: {e}")
+        return f"ERROR: Er is een fout opgetreden: {e}", 500
+
+# --- ENVIRONMENT VARIABLES ---
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 SMTP_SERVER = os.environ.get('SMTP_SERVER')
@@ -22,17 +64,11 @@ EMAIL_USER = os.environ.get('EMAIL_USER')
 EMAIL_PASS = os.environ.get('EMAIL_PASS')
 ONTVANGER_EMAIL = os.environ.get('ONTVANGER_EMAIL')
 JSONBIN_API_KEY = os.environ.get('JSONBIN_API_KEY')
-
-# BELANGRIJK: VERVANG DE VOLGENDE REGEL MET JE ECHTE BIN ID VAN JSONBIN.IO
-JSONBIN_BIN_ID = "68e7ee0cd0ea881f409b6804"
+JSONBIN_BIN_ID = os.environ.get('JSONBIN_BIN_ID')
 
 # --- JSONBIN.IO FUNCTIES ---
-
 def load_state_from_jsonbin():
-    if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
-        logging.error("jsonbin.io configuratie onvolledig (API Key of Bin ID).")
-        return None
-    
+    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return None
     headers = {'X-Master-Key': JSONBIN_API_KEY, 'X-Bin-Meta': 'false'}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
     try:
@@ -45,10 +81,7 @@ def load_state_from_jsonbin():
         return None
 
 def save_state_to_jsonbin(state):
-    if not JSONBIN_API_KEY or JSONBIN_BIN_ID.startswith("PLAK_HIER"):
-        logging.error("jsonbin.io configuratie onvolledig, staat niet opgeslagen.")
-        return
-
+    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return
     headers = {'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
     try:
@@ -57,7 +90,6 @@ def save_state_to_jsonbin(state):
         logging.info("Nieuwe staat succesvol opgeslagen naar jsonbin.io.")
     except Exception as e:
         logging.error(f"Fout bij opslaan van staat naar jsonbin.io: {e}")
-
 
 # --- SCRAPER FUNCTIES ---
 def login(session):
@@ -167,62 +199,37 @@ def format_wijzigingen_email(wijzigingen):
     return "\n\n".join(body)
 
 def filter_snapshot_schepen(bestellingen):
-    """Filtert de schepen voor de overzichtsmail op basis van de ETA-regel en de Loods-regel."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_toekomst_eta = nu + timedelta(hours=8)
-
     for b in bestellingen:
         try:
-            # --- NIEUWE FILTER ---
-            # Sla dit schip over als het veld "Loods" leeg is.
-            if not b.get('Loods', '').strip():
-                continue
-
+            if not b.get('Loods', '').strip(): continue
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str:
-                continue
-            
+            if not besteltijd_str: continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-
             if b.get("Type") == "U":
-                if nu <= besteltijd <= grens_uit_toekomst:
-                    gefilterd["UITGAAND"].append(b)
-
+                if nu <= besteltijd <= grens_uit_toekomst: gefilterd["UITGAAND"].append(b)
             elif b.get("Type") == "I":
                 entry_point = b.get('Entry Point', '')
                 eta_dt = None
-
-                if "KN: Steenbank" in entry_point:
-                    eta_dt = besteltijd + timedelta(hours=7)
-                elif "KW: Wandelaar" in entry_point:
-                    eta_dt = besteltijd + timedelta(hours=6)
-
+                if "KN: Steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
+                elif "KW: Wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
                 if eta_dt and nu <= eta_dt <= grens_in_toekomst_eta:
                     b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     gefilterd["INKOMEND"].append(b)
-
-        except (ValueError, TypeError):
-            continue
-            
+        except (ValueError, TypeError): continue
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
-    """Formatteert de overzichtsmail, inclusief de berekende ETA."""
     body = "--- BINNENKOMENDE SCHEPEN (Berekende ETA binnen 8u & Loods toegewezen) ---\n"
     if snapshot_data.get('INKOMEND'):
         snapshot_data['INKOMEND'].sort(key=lambda x: x.get('berekende_eta', ''))
         for schip in snapshot_data['INKOMEND']:
-            naam = schip.get('Schip', 'N/A').ljust(30)
-            besteltijd_str = schip.get('Besteltijd', 'N/A')
-            loods = schip.get('Loods', 'N/A')
-            eta_str = schip.get('berekende_eta', 'N/A')
-            
-            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | Berekende ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
+            body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A').ljust(15)} | Berekende ETA: {schip.get('berekende_eta', 'N/A').ljust(15)} | Loods: {schip.get('Loods', 'N/A')}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
-    
     body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u & Loods toegewezen) ---\n"
     if snapshot_data.get('UITGAAND'):
         snapshot_data['UITGAAND'].sort(key=lambda x: x.get('Besteltijd', ''))
@@ -234,7 +241,7 @@ def format_snapshot_email(snapshot_data):
 
 def verstuur_email(onderwerp, inhoud):
     if not all([SMTP_SERVER, EMAIL_USER, EMAIL_PASS, ONTVANGER_EMAIL]):
-        logging.error("E-mail niet verstuurd: SMTP-instellingen ontbreken in Environment Variables.")
+        logging.error("E-mail niet verstuurd: SMTP-instellingen ontbreken.")
         return
     try:
         msg = MIMEText(inhoud, 'plain', 'utf-8')
@@ -245,83 +252,87 @@ def verstuur_email(onderwerp, inhoud):
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, ONTVANGER_EMAIL, msg.as_string())
-        logging.info(f"E-mail succesvol verzonden naar {ONTVANGER_EMAIL}")
+        logging.info(f"E-mail succesvol verzonden: '{onderwerp}'")
     except Exception as e:
         logging.error(f"E-mail versturen mislukt: {e}")
 
 # --- HOOFDFUNCTIE ---
 def main():
-    logging.info("--- Cron Job Gestart ---")
-    if JSONBIN_BIN_ID.startswith("PLAK_HIER"):
-        logging.critical("FATALE FOUT: De JSONBIN_BIN_ID in het app.py script is niet vervangen!")
+    if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
+        logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld!")
         return
-    if not all([USER, PASS, JSONBIN_API_KEY]):
-        logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld in Render!")
-        return
-
-    # 1. Laad de volledige staat van de vorige run uit de cloud
+    
+    # Laad de vorige staat uit de cloud, inclusief de opgeslagen web-data
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
-        vorige_staat = {"bestellingen": [], "last_report_key": ""}
+        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
+    
+    # Herstel de webpagina staat
+    with data_lock:
+        app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
+        app_state["change_history"].clear()
+        app_state["change_history"].extend(vorige_staat.get("web_changes", []))
 
-    # 2. Log in en haal nieuwe data op
     session = requests.Session()
-    if not login(session):
-        logging.error("Inloggen mislukt. Script stopt.")
-        return
-
+    if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
-    if not nieuwe_bestellingen:
-        logging.warning("Geen nieuwe bestellingen opgehaald. Script stopt.")
-        return
+    if not nieuwe_bestellingen: return
     logging.info(f"{len(nieuwe_bestellingen)} bestellingen opgehaald.")
 
-    # 3. Vergelijk en verstuur e-mail indien nodig
+    # Vergelijk en verstuur e-mail indien nodig
     if oude_bestellingen:
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
-            logging.info(f"{len(wijzigingen)} wijziging(en) gevonden!")
             inhoud = format_wijzigingen_email(wijzigingen)
-            verstuur_email(f"LIS Update: {len(wijzigingen)} wijziging(en)", inhoud)
+            onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
+            verstuur_email(onderwerp, inhoud)
+            with data_lock:
+                app_state["change_history"].appendleft({
+                    "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                    "onderwerp": onderwerp,
+                    "content": inhoud
+                })
         else:
             logging.info("Geen relevante wijzigingen gevonden.")
     else:
-        logging.info("Eerste run, geen oude data om mee te vergelijken. Basislijn wordt opgeslagen.")
+        logging.info("Eerste run, basislijn wordt opgeslagen.")
 
-    # 4. Stuur snapshot op vaste tijden
+    # Stuur snapshot op vaste tijden
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
-    
-    report_times = [(1, 0), (4, 0), (5, 30), (9, 0), (12, 0), (13, 30), (17, 0), (20, 0), (21, 30)]
-    
+    report_times = [(4, 0), (5, 30), (12, 0), (13, 30), (20, 0), (21, 30)]
     current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}"
-    
-    should_send_report = False
-    for report_hour, report_minute in report_times:
-        if nu_brussels.hour == report_hour and report_minute <= nu_brussels.minute < report_minute + 15:
-            should_send_report = True
-            break
+    should_send_report = any(h == nu_brussels.hour and m <= nu_brussels.minute < m + 15 for h, m in report_times)
     
     if should_send_report and current_key != last_report_key:
-        logging.info(f"Tijd voor gepland rapport: {nu_brussels.strftime('%H:%M')}")
         snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
         inhoud = format_snapshot_email(snapshot_data)
         onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
         verstuur_email(onderwerp, inhoud)
         last_report_key = current_key
+        with data_lock:
+            app_state["latest_snapshot"] = {
+                "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
+                "content": inhoud
+            }
     
-    # 5. Sla de nieuwe staat op voor de volgende run in de cloud
+    # Sla de nieuwe staat op voor de volgende run
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
-        "last_report_key": last_report_key
+        "last_report_key": last_report_key,
+        "web_snapshot": app_state["latest_snapshot"],
+        "web_changes": list(app_state["change_history"])
     }
     save_state_to_jsonbin(nieuwe_staat)
-    
     logging.info("--- Cron Job Voltooid ---")
 
-if __name__ == "__main__":
-    main()
+# Deze check is nodig zodat gunicorn de 'app' variabele kan vinden
+# Zonder dit zal de web service niet starten.
+if __name__ == '__main__':
+    # Deze code wordt alleen lokaal uitgevoerd, niet op Render
+    # Op Render wordt de app gestart via de 'gunicorn' command
+    app.run(host='0.0.0.0', port=5000)
 
