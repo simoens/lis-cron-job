@@ -12,8 +12,10 @@
         .card-header h2 { margin: 0; font-size: 1.2em; color: #1877f2; }
         .card-header .timestamp { font-size: 0.8em; color: #606770; }
         .card-body { padding: 16px; }
-        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #f5f6f7; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.9em; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #f5f6f7; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.9em; line-height: 1.4; }
         h1 { text-align: center; color: #333; }
+        .change-item { border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em; }
+        .change-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
     </style>
 </head>
 <body>
@@ -38,7 +40,7 @@
             </div>
             <div class="card-body">
                 {% for change in changes %}
-                    <div class="change-item" style="border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em;">
+                    <div class="change-item">
                         <div class="timestamp"><strong>{{ change.onderwerp }}</strong> - verstuurd op: {{ change.timestamp }}</div>
                         <pre>{{ change.content }}</pre>
                     </div>
@@ -51,5 +53,4 @@
     </div>
 </body>
 </html>
-
 
