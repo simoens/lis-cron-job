@@ -241,8 +241,8 @@ def filter_snapshot_schepen(bestellingen):
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
                     entry_point = b.get('Entry Point', '')
                     eta_dt = None
-                    if "KW: Wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
-                    elif "KN: Steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
+                    if "Wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
+                    elif "Steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                     b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M") if eta_dt else 'N/A'
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError): continue
