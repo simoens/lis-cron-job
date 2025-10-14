@@ -1,8 +1,3 @@
-T'is goed, hier is de volledige, correcte code voor het `app.py` bestand.
-
-Deze versie bevat de logica voor de webpagina, de trigger voor de externe cron job, en de functionaliteit voor de "Forceer Overzicht" knop.
-
-```python
 import requests
 from bs4 import BeautifulSoup
 import logging
