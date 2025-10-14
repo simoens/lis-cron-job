@@ -5,26 +5,67 @@
     <meta http-equiv="refresh" content="300"> <!-- Pagina elke 5 minuten verversen -->
     <title>LIS Scraper Dashboard</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f0f2f5; color: #1c1e21; }
-        .container { max-width: 900px; margin: 2em auto; }
-        .card { background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2em; overflow: hidden; }
-        .card-header { 
-            background-color: #e7f3ff; 
-            padding: 12px 16px; 
-            border-bottom: 1px solid #dddfe2; 
-            display: flex; /* Maakt dit een flex container */
-            justify-content: space-between; /* Plaatst de titel en knop aan weerszijden */
-            align-items: center; /* Lijn alles verticaal uit */
+        /* MPET Kleurenschema met geel accent */
+        :root {
+            --mpet-dark-blue: #003366;
+            --mpet-dark-blue-hover: #004488; /* Iets lichtere tint voor hover */
+            --mpet-cyan: #00AEEF;
+            --mpet-yellow: #FFC72C;
+            --background-grey: #f0f2f5;
+            --card-white: #ffffff;
+            --text-dark: #1c1e21;
+            --text-light: #606770;
+            --border-grey: #dddfe2;
         }
-        .header-title h2 { margin: 0; font-size: 1.2em; color: #1877f2; }
-        .header-title .timestamp { font-size: 0.8em; color: #606770; }
+
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            margin: 0; 
+            background-color: var(--background-grey); 
+            color: var(--text-dark); 
+        }
+        .container { max-width: 900px; margin: 2em auto; }
+        .card { 
+            background-color: var(--card-white); 
+            border-radius: 8px; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+            margin-bottom: 2em; 
+            overflow: hidden; 
+        }
+        .card-header { 
+            background-color: var(--card-white); 
+            padding: 12px 16px; 
+            border-bottom: 1px solid var(--border-grey); 
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 5px solid var(--mpet-yellow);
+        }
+        .header-title h2 { 
+            margin: 0; 
+            font-size: 1.2em; 
+            color: var(--mpet-dark-blue);
+        }
+        .header-title .timestamp { 
+            font-size: 0.8em; 
+            color: var(--text-light); 
+        }
         .card-body { padding: 16px; }
-        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #f5f6f7; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.9em; line-height: 1.4; }
-        h1 { text-align: center; color: #333; }
+        pre { 
+            white-space: pre-wrap; 
+            word-wrap: break-word; 
+            background-color: #f5f6f7; 
+            padding: 12px; 
+            border-radius: 6px; 
+            font-family: monospace; 
+            font-size: 0.9em; 
+            line-height: 1.4; 
+        }
+        h1 { text-align: center; color: var(--mpet-dark-blue); }
         .change-item { border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em; }
         .change-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
         
-        /* Aangepaste, subtielere knop stijl */
+        /* Knop in MPET donkerblauw */
         .force-button { 
             display: inline-block; 
             padding: 8px 14px; 
@@ -35,13 +76,14 @@
             text-decoration: none; 
             outline: none; 
             color: #fff; 
-            background-color: #1877f2; 
+            background-color: var(--mpet-dark-blue); /* AANGEPAST */
             border: none; 
             border-radius: 6px; 
-            box-shadow: 0 2px #999;
+            box-shadow: 0 2px #666;
+            transition: background-color 0.2s;
         }
-        .force-button:hover { background-color: #166fe5 }
-        .force-button:active { background-color: #166fe5; box-shadow: 0 1px #666; transform: translateY(1px); }
+        .force-button:hover { background-color: var(--mpet-dark-blue-hover); } /* AANGEPAST */
+        .force-button:active { transform: translateY(1px); box-shadow: 0 1px #444; }
         .force-button:disabled { background-color: #9cb4d8; cursor: not-allowed; box-shadow: none; }
     </style>
 </head>
@@ -49,7 +91,6 @@
     <div class="container">
         <h1>LIS Dashboard</h1>
 
-        <!-- De knop is nu onderdeel van de header van het volgende kaartje -->
         <div class="card">
             <div class="card-header">
                 <div class="header-title">
@@ -68,7 +109,6 @@
             </div>
         </div>
 
-        <!-- Sectie voor de laatste wijzigingen -->
         <div class="card">
             <div class="card-header">
                 <div class="header-title">
