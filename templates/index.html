@@ -5,15 +5,15 @@
     <meta http-equiv="refresh" content="300"> <!-- Pagina elke 5 minuten verversen -->
     <title>LIS Scraper Dashboard</title>
     <style>
-        /* MPET Kleurenschema met geel accent */
+        /* Nieuw kleurenschema gebaseerd op de afbeelding */
         :root {
-            --mpet-dark-blue: #003366;
-            --mpet-dark-blue-hover: #004488; /* Iets lichtere tint voor hover */
-            --mpet-cyan: #00AEEF;
-            --mpet-yellow: #FFC72C;
-            --background-grey: #f0f2f5;
+            --accent-yellow: #ffdd00;
+            --primary-black: #2d2a26;
+            --primary-black-hover: #4a4a4a; /* Iets lichtere tint voor hover */
+            --secondary-grey: #afadab;
+            --background-light-grey: #f0f2f5;
             --card-white: #ffffff;
-            --text-dark: #1c1e21;
+            --text-dark: #2d2a26; /* Gebruik het primaire zwart voor tekst */
             --text-light: #606770;
             --border-grey: #dddfe2;
         }
@@ -21,7 +21,7 @@
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
             margin: 0; 
-            background-color: var(--background-grey); 
+            background-color: var(--background-light-grey); 
             color: var(--text-dark); 
         }
         .container { max-width: 900px; margin: 2em auto; }
@@ -39,12 +39,13 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-left: 5px solid var(--mpet-yellow);
+            /* Gele accent-balk */
+            border-left: 5px solid var(--accent-yellow);
         }
         .header-title h2 { 
             margin: 0; 
             font-size: 1.2em; 
-            color: var(--mpet-dark-blue);
+            color: var(--primary-black); /* Gebruik primair zwart */
         }
         .header-title .timestamp { 
             font-size: 0.8em; 
@@ -61,11 +62,11 @@
             font-size: 0.9em; 
             line-height: 1.4; 
         }
-        h1 { text-align: center; color: var(--mpet-dark-blue); }
+        h1 { text-align: center; color: var(--primary-black); }
         .change-item { border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em; }
         .change-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
         
-        /* Knop in MPET donkerblauw */
+        /* Knop in primair zwart */
         .force-button { 
             display: inline-block; 
             padding: 8px 14px; 
@@ -76,15 +77,15 @@
             text-decoration: none; 
             outline: none; 
             color: #fff; 
-            background-color: var(--mpet-dark-blue); /* AANGEPAST */
+            background-color: var(--primary-black);
             border: none; 
             border-radius: 6px; 
             box-shadow: 0 2px #666;
             transition: background-color 0.2s;
         }
-        .force-button:hover { background-color: var(--mpet-dark-blue-hover); } /* AANGEPAST */
+        .force-button:hover { background-color: var(--primary-black-hover); }
         .force-button:active { transform: translateY(1px); box-shadow: 0 1px #444; }
-        .force-button:disabled { background-color: #9cb4d8; cursor: not-allowed; box-shadow: none; }
+        .force-button:disabled { background-color: var(--secondary-grey); color: #2d2a26; cursor: not-allowed; box-shadow: none; }
     </style>
 </head>
 <body>
