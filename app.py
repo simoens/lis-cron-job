@@ -1,3 +1,8 @@
+T'is goed, hier is de volledige, correcte code voor het `app.py` bestand.
+
+Deze versie bevat de logica voor de webpagina, de trigger voor de externe cron job, en de functionaliteit voor de "Forceer Overzicht" knop.
+
+```python
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -11,7 +16,7 @@ from collections import defaultdict, deque
 import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
-import time # <-- DEZE REGEL IS TOEGEVOEGD
+import time
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,7 +41,7 @@ def home():
             app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
             app_state["change_history"].clear()
             app_state["change_history"].extend(vorige_staat.get("web_changes", []))
-            
+
     with data_lock:
         return render_template('index.html',
                                snapshot=app_state["latest_snapshot"],
@@ -50,15 +55,14 @@ def trigger_run():
     if secret != os.environ.get('SECRET_KEY'):
         logging.warning("Mislukte poging om /trigger-run aan te roepen met ongeldige secret key.")
         abort(403)
-    
+
     logging.info("================== Externe Trigger Ontvangen: Run Start ==================")
     try:
-        # Draai de hoofdtaak in een aparte thread om een timeout te voorkomen
-        thread = threading.Thread(target=main)
-        thread.start()
-        return "OK: Scraper run geactiveerd.", 200
+        # Verwijder de thread, voer de taak direct uit.
+        main()
+        return "OK: Scraper run voltooid.", 200
     except Exception as e:
-        logging.critical(f"FATALE FOUT bij het starten van de getriggerde run: {e}")
+        logging.critical(f"FATALE FOUT tijdens de getriggerde run: {e}")
         return f"ERROR: Er is een fout opgetreden: {e}", 500
 
 @app.route('/force-snapshot', methods=['POST'])
@@ -67,17 +71,15 @@ def force_snapshot_route():
     secret = request.form.get('secret')
     if secret != os.environ.get('SECRET_KEY'):
         abort(403)
-    
+
     logging.info("================== Handmatige Snapshot Geactiveerd ==================")
     try:
-        # Draai de taak in een aparte thread om de gebruiker niet te laten wachten
-        thread = threading.Thread(target=force_snapshot_task)
-        thread.start()
+        # Verwijder de thread, voer de taak direct uit.
+        force_snapshot_task()
     except Exception as e:
         logging.critical(f"FATALE FOUT tijdens geforceerde snapshot: {e}")
-    
-    # Geef de gebruiker even de tijd om de taak te starten en stuur dan terug
-    time.sleep(2)
+
+    # Stuur de gebruiker terug naar de hoofdpagina NADAT de taak klaar is.
     return redirect(url_for('home'))
 
 # --- ENVIRONMENT VARIABLES ---
@@ -278,7 +280,7 @@ def verstuur_email(onderwerp, inhoud):
         msg['Subject'] = onderwerp
         msg['From'] = EMAIL_USER
         msg['To'] = ONTVANGER_EMAIL
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server: # Voeg timeout toe
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, ONTVANGER_EMAIL, msg.as_string())
@@ -296,12 +298,12 @@ def force_snapshot_task():
 
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
-    
+
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
     inhoud = format_snapshot_email(snapshot_data)
     onderwerp = f"LIS Overzicht (Geforceerd) - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
     verstuur_email(onderwerp, inhoud)
-    
+
     with data_lock:
         app_state["latest_snapshot"] = {
             "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
@@ -319,14 +321,14 @@ def main():
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
         logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld!")
         return
-    
+
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
         vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
-    
+
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
-    
+
     with data_lock:
         app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
         app_state["change_history"].clear()
@@ -336,7 +338,7 @@ def main():
     if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen: return
-    
+
     if oude_bestellingen:
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
@@ -356,15 +358,15 @@ def main():
 
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
-    
+
     report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
-    
+
     tijdstip_voor_rapport = None
     for report_hour, report_minute in report_times:
         rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
         if nu_brussels >= rapport_tijd_vandaag:
             tijdstip_voor_rapport = rapport_tijd_vandaag
-            
+
     if tijdstip_voor_rapport:
         current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
         if current_key != last_report_key:
@@ -379,7 +381,7 @@ def main():
                     "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
                     "content": inhoud
                 }
-    
+
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
@@ -388,4 +390,4 @@ def main():
     }
     save_state_to_jsonbin(nieuwe_staat)
     logging.info("--- Cron Job Voltooid ---")
-
+```
