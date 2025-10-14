@@ -9,75 +9,32 @@ from email.mime.text import MIMEText
 import json
 from collections import defaultdict, deque
 import pytz
-from flask import Flask, render_template, request, abort, redirect, url_for
-import threading
-import time
+from flask import Flask, render_template
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
-app_state = {
-    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content": "Wachten op de eerste run..."},
-    "change_history": deque(maxlen=10)
-}
-data_lock = threading.Lock()
-
-# --- FLASK APPLICATIE ---
+# --- FLASK APPLICATIE (DE ETALAGE) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    """Toont de webpagina met de opgeslagen e-mailinhoud."""
-    # Laad de meest recente staat elke keer als de pagina wordt bezocht
-    vorige_staat = load_state_from_jsonbin()
-    if vorige_staat:
-        with data_lock:
-            app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
-            app_state["change_history"].clear()
-            app_state["change_history"].extend(vorige_staat.get("web_changes", []))
+    """Toont de webpagina met de laatst bekende data uit de 'kluis'."""
+    logging.info("Webpagina opgevraagd. Data wordt uit jsonbin.io geladen.")
+    state = load_state_from_jsonbin()
+    if state is None:
+        state = {
+            "web_snapshot": {"timestamp": "Fout", "content": "Kon data niet laden uit de cloud. Wacht op de volgende run van de Cron Job."},
+            "web_changes": []
+        }
+    
+    changes_deque = deque(state.get("web_changes", []), maxlen=10)
 
-    with data_lock:
-        return render_template('index.html',
-                               snapshot=app_state["latest_snapshot"],
-                               changes=list(app_state["change_history"]),
-                               secret_key=os.environ.get('SECRET_KEY'))
+    return render_template('index.html', 
+                           snapshot=state.get("web_snapshot", {}), 
+                           changes=list(changes_deque))
 
-@app.route('/trigger-run')
-def trigger_run():
-    """Geheime URL die door de externe cron job wordt aangeroepen."""
-    secret = request.args.get('secret')
-    if secret != os.environ.get('SECRET_KEY'):
-        logging.warning("Mislukte poging om /trigger-run aan te roepen met ongeldige secret key.")
-        abort(403)
-
-    logging.info("================== Externe Trigger Ontvangen: Run Start ==================")
-    try:
-        # Verwijder de thread, voer de taak direct uit.
-        main()
-        return "OK: Scraper run voltooid.", 200
-    except Exception as e:
-        logging.critical(f"FATALE FOUT tijdens de getriggerde run: {e}")
-        return f"ERROR: Er is een fout opgetreden: {e}", 500
-
-@app.route('/force-snapshot', methods=['POST'])
-def force_snapshot_route():
-    """Wordt aangeroepen door de knop op de webpagina om een overzicht te forceren."""
-    secret = request.form.get('secret')
-    if secret != os.environ.get('SECRET_KEY'):
-        abort(403)
-
-    logging.info("================== Handmatige Snapshot Geactiveerd ==================")
-    try:
-        # Verwijder de thread, voer de taak direct uit.
-        force_snapshot_task()
-    except Exception as e:
-        logging.critical(f"FATALE FOUT tijdens geforceerde snapshot: {e}")
-
-    # Stuur de gebruiker terug naar de hoofdpagina NADAT de taak klaar is.
-    return redirect(url_for('home'))
-
-# --- ENVIRONMENT VARIABLES ---
+# --- ENVIRONMENT VARIABLES & ALGEMENE CONFIG ---
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 SMTP_SERVER = os.environ.get('SMTP_SERVER')
@@ -90,20 +47,23 @@ JSONBIN_BIN_ID = os.environ.get('JSONBIN_BIN_ID')
 
 # --- JSONBIN.IO FUNCTIES ---
 def load_state_from_jsonbin():
-    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return None
+    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): 
+        logging.error("jsonbin.io configuratie onvolledig in Environment Variables.")
+        return None
     headers = {'X-Master-Key': JSONBIN_API_KEY, 'X-Bin-Meta': 'false'}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
     try:
         res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
-        logging.info("Staat succesvol geladen van jsonbin.io.")
         return res.json()
     except Exception as e:
         logging.error(f"Fout bij laden van staat van jsonbin.io: {e}")
         return None
 
 def save_state_to_jsonbin(state):
-    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return
+    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): 
+        logging.error("jsonbin.io configuratie onvolledig, staat niet opgeslagen.")
+        return
     headers = {'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY}
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
     try:
@@ -122,14 +82,10 @@ def login(session):
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.text, 'lxml')
         viewstate = soup.find('input', {'name': '__VIEWSTATE'})
-        if not viewstate:
+        if not viewstate: 
             logging.error("Kon __VIEWSTATE niet vinden op loginpagina.")
             return False
-        form_data = {
-            '__VIEWSTATE': viewstate['value'],
-            'ctl00$ContentPlaceHolder1$login$uname': USER,
-            'ctl00$ContentPlaceHolder1$login$password': PASS,
-            'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'}
+        form_data = {'__VIEWSTATE': viewstate['value'], 'ctl00$ContentPlaceHolder1$login$uname': USER, 'ctl00$ContentPlaceHolder1$login$password': PASS, 'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'}
         login_response = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=form_data, headers=headers)
         login_response.raise_for_status()
         if "Login.aspx" not in login_response.url:
@@ -283,69 +239,39 @@ def verstuur_email(onderwerp, inhoud):
     except Exception as e:
         logging.error(f"E-mail versturen mislukt: {e}")
 
-# --- TAAK-SPECIFIEKE FUNCTIE VOOR DE KNOP ---
-def force_snapshot_task():
-    """Voert alleen de logica uit om een nieuw overzicht te genereren en versturen."""
-    session = requests.Session()
-    if not login(session): return
-    nieuwe_bestellingen = haal_bestellingen_op(session)
-    if not nieuwe_bestellingen: return
-
-    brussels_tz = pytz.timezone('Europe/Brussels')
-    nu_brussels = datetime.now(brussels_tz)
-
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
-    inhoud = format_snapshot_email(snapshot_data)
-    onderwerp = f"LIS Overzicht (Geforceerd) - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
-    verstuur_email(onderwerp, inhoud)
-
-    with data_lock:
-        app_state["latest_snapshot"] = {
-            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content": inhoud
-        }
-
-    current_state = load_state_from_jsonbin()
-    if current_state is None:
-        current_state = {}
-    current_state["web_snapshot"] = app_state["latest_snapshot"]
-    save_state_to_jsonbin(current_state)
-
-# --- HOOFDFUNCTIE (voor de cron job) ---
-def main():
+# --- HOOFDFUNCTIE VOOR DE CRON JOB (DE WERKBIJ) ---
+def run_scraper_task():
+    logging.info("================== Cron Job Taak Gestart ==================")
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
         logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld!")
         return
-
+    
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
-        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
-
+        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": {"timestamp": "Nog niet uitgevoerd", "content": "Wachten op eerste run..."}, "web_changes": []}
+    
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
-
-    with data_lock:
-        app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
-        app_state["change_history"].clear()
-        app_state["change_history"].extend(vorige_staat.get("web_changes", []))
+    
+    web_snapshot = vorige_staat.get("web_snapshot")
+    web_changes = deque(vorige_staat.get("web_changes", []), maxlen=10)
 
     session = requests.Session()
     if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen: return
-
+    
     if oude_bestellingen:
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
             inhoud = format_wijzigingen_email(wijzigingen)
             onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
             verstuur_email(onderwerp, inhoud)
-            with data_lock:
-                app_state["change_history"].appendleft({
-                    "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-                    "onderwerp": onderwerp,
-                    "content": inhoud
-                })
+            web_changes.appendleft({
+                "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                "onderwerp": onderwerp,
+                "content": inhoud
+            })
         else:
             logging.info("Geen relevante wijzigingen gevonden.")
     else:
@@ -353,15 +279,15 @@ def main():
 
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
-
+    
     report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
-
+    
     tijdstip_voor_rapport = None
     for report_hour, report_minute in report_times:
         rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
         if nu_brussels >= rapport_tijd_vandaag:
             tijdstip_voor_rapport = rapport_tijd_vandaag
-
+            
     if tijdstip_voor_rapport:
         current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
         if current_key != last_report_key:
@@ -371,18 +297,18 @@ def main():
             onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
             verstuur_email(onderwerp, inhoud)
             last_report_key = current_key
-            with data_lock:
-                app_state["latest_snapshot"] = {
-                    "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-                    "content": inhoud
-                }
-
+            web_snapshot = {"timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), "content": inhoud}
+    
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
-        "web_snapshot": app_state["latest_snapshot"],
-        "web_changes": list(app_state["change_history"])
+        "web_snapshot": web_snapshot,
+        "web_changes": list(web_changes)
     }
     save_state_to_jsonbin(nieuwe_staat)
-    logging.info("--- Cron Job Voltooid ---")
-```
+    logging.info("================== Cron Job Taak Voltooid ==================")
+
+# Deze 'if' blok zorgt ervoor dat de scraper alleen start als je `python -m app` draait.
+if __name__ == '__main__':
+    run_scraper_task()
+
