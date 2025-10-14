@@ -177,45 +177,31 @@ def format_wijzigingen_email(wijzigingen):
     return "\n\n".join(body)
 
 def filter_snapshot_schepen(bestellingen):
-    """Filtert de schepen voor de overzichtsmail op basis van de Besteltijd."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
-
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str:
-                continue
-            
+            if not besteltijd_str: continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-
             if b.get("Type") == "U":
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
-
             elif b.get("Type") == "I":
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
                     entry_point = b.get('Entry Point', '')
                     eta_dt = None
-                    # --- BEREKENING ETA GECORRIGEERD ---
-                    if "KW: Wandelaar" in entry_point:
-                        eta_dt = besteltijd + timedelta(hours=6)
-                    elif "KN: Steenbank" in entry_point:
-                        eta_dt = besteltijd + timedelta(hours=7)
-                    
+                    if "KW: Wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
+                    elif "KN: Steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                     b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M") if eta_dt else 'N/A'
                     gefilterd["INKOMEND"].append(b)
-
-        except (ValueError, TypeError):
-            continue
-            
+        except (ValueError, TypeError): continue
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
-    """Formatteert de overzichtsmail met de nieuwe regels."""
     body = "--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---\n"
     if snapshot_data.get('INKOMEND'):
         snapshot_data['INKOMEND'].sort(key=lambda x: x.get('Besteltijd', ''))
@@ -224,11 +210,9 @@ def format_snapshot_email(snapshot_data):
             besteltijd_str = schip.get('Besteltijd', 'N/A')
             loods = schip.get('Loods', 'N/A')
             eta_str = schip.get('berekende_eta', 'N/A')
-            
             body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | Berekende ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
-    
     body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---\n"
     if snapshot_data.get('UITGAAND'):
         snapshot_data['UITGAAND'].sort(key=lambda x: x.get('Besteltijd', ''))
@@ -255,79 +239,77 @@ def verstuur_email(onderwerp, inhoud):
     except Exception as e:
         logging.error(f"E-mail versturen mislukt: {e}")
 
-# --- HOOFDFUNCTIE ---
-def main():
+# --- HOOFDFUNCTIE (DE WERKBIJ) ---
+def run_scraper_task():
+    logging.info("================== Cron Job Taak Gestart ==================")
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
         logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld!")
         return
     
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
-        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
+        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": {"timestamp": "Nog niet uitgevoerd", "content": "Wachten op eerste run..."}, "web_changes": []}
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
     
-    with data_lock:
-        app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
-        app_state["change_history"].clear()
-        app_state["change_history"].extend(vorige_staat.get("web_changes", []))
+    web_snapshot = vorige_staat.get("web_snapshot")
+    web_changes = deque(vorige_staat.get("web_changes", []), maxlen=10)
 
     session = requests.Session()
     if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen: return
-    logging.info(f"{len(nieuwe_bestellingen)} bestellingen opgehaald.")
-
+    
     if oude_bestellingen:
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
             inhoud = format_wijzigingen_email(wijzigingen)
             onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
             verstuur_email(onderwerp, inhoud)
-            with data_lock:
-                app_state["change_history"].appendleft({
-                    "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-                    "onderwerp": onderwerp,
-                    "content": inhoud
-                })
+            web_changes.appendleft({
+                "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                "onderwerp": onderwerp,
+                "content": inhoud
+            })
         else:
             logging.info("Geen relevante wijzigingen gevonden.")
     else:
         logging.info("Eerste run, basislijn wordt opgeslagen.")
 
+    # --- AANGEPASTE LOGICA VOOR SNAPSHOTS ---
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    # --- RAPPORTTIJDEN AANGEPAST ---
-    report_times = [(1, 0), (4, 0), (5, 30), (9, 0), (12, 0), (13, 30), (17, 0), (20, 0), (21, 30)]
+    report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
     
-    current_key = f"{nu_brussels.year}-{nu_brussels.month}-{nu_brussels.day}-{nu_brussels.hour}"
-    should_send_report = any(h == nu_brussels.hour and m <= nu_brussels.minute < m + 15 for h, m in report_times)
-    
-    if should_send_report and current_key != last_report_key:
-        snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
-        inhoud = format_snapshot_email(snapshot_data)
-        onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
-        verstuur_email(onderwerp, inhoud)
-        last_report_key = current_key
-        with data_lock:
-            app_state["latest_snapshot"] = {
-                "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-                "content": inhoud
-            }
+    tijdstip_voor_rapport = None
+    for report_hour, report_minute in report_times:
+        rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
+        if nu_brussels >= rapport_tijd_vandaag:
+            tijdstip_voor_rapport = rapport_tijd_vandaag
+            
+    if tijdstip_voor_rapport:
+        current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
+        if current_key != last_report_key:
+            logging.info(f"Tijd voor gepland rapport van {tijdstip_voor_rapport.strftime('%H:%M')}")
+            snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
+            inhoud = format_snapshot_email(snapshot_data)
+            onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
+            verstuur_email(onderwerp, inhoud)
+            last_report_key = current_key
+            web_snapshot = {"timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), "content": inhoud}
     
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
-        "web_snapshot": app_state["latest_snapshot"],
-        "web_changes": list(app_state["change_history"])
+        "web_snapshot": web_snapshot,
+        "web_changes": list(web_changes)
     }
     save_state_to_jsonbin(nieuwe_staat)
-    logging.info("--- Cron Job Voltooid ---")
+    logging.info("================== Cron Job Taak Voltooid ==================")
 
-# Deze 'if' blok is nodig zodat gunicorn de 'app' variabele kan vinden
+# Deze 'if' blok zorgt ervoor dat de scraper alleen start als je `python -m app` draait.
 if __name__ == '__main__':
-    # Deze code wordt NIET uitgevoerd op Render
-    pass
+    run_scraper_task()
 
