@@ -29,7 +29,6 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     """Toont de webpagina met de opgeslagen e-mailinhoud."""
-    # Laad de meest recente staat elke keer als de pagina wordt bezocht
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat:
         with data_lock:
@@ -53,7 +52,6 @@ def trigger_run():
     
     logging.info("================== Externe Trigger Ontvangen: Run Start ==================")
     try:
-        # Verwijder de thread, voer de taak direct uit.
         main()
         return "OK: Scraper run voltooid.", 200
     except Exception as e:
@@ -69,12 +67,10 @@ def force_snapshot_route():
     
     logging.info("================== Handmatige Snapshot Geactiveerd ==================")
     try:
-        # Verwijder de thread, voer de taak direct uit.
         force_snapshot_task()
     except Exception as e:
         logging.critical(f"FATALE FOUT tijdens geforceerde snapshot: {e}")
     
-    # Stuur de gebruiker terug naar de hoofdpagina NADAT de taak klaar is.
     return redirect(url_for('home'))
 
 # --- ENVIRONMENT VARIABLES ---
@@ -221,28 +217,43 @@ def format_wijzigingen_email(wijzigingen):
     return "\n\n".join(body)
 
 def filter_snapshot_schepen(bestellingen):
+    """Filtert de schepen voor de overzichtsmail met de robuuste ETA-berekening."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
+    
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str: continue
+            if not besteltijd_str:
+                continue
+            
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
+
             if b.get("Type") == "U":
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
+
             elif b.get("Type") == "I":
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
-                    entry_point = b.get('Entry Point', '')
+                    # Gebruik .lower() om de controle case-insensitief te maken
+                    entry_point = b.get('Entry Point', '').lower()
                     eta_dt = None
-                    if "KW: Wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
-                    elif "KN: Steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
+                    
+                    # Zoek naar sleutelwoorden in plaats van een exacte match
+                    if "wandelaar" in entry_point:
+                        eta_dt = besteltijd + timedelta(hours=6)
+                    elif "steenbank" in entry_point:
+                        eta_dt = besteltijd + timedelta(hours=7)
+                    
                     b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M") if eta_dt else 'N/A'
                     gefilterd["INKOMEND"].append(b)
-        except (ValueError, TypeError): continue
+
+        except (ValueError, TypeError):
+            continue
+            
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
