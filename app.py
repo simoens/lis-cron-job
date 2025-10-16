@@ -149,12 +149,58 @@ def haal_bestellingen_op(session):
         for row in table.find_all('tr')[1:]:
             kolom_data = row.find_all('td')
             if not kolom_data: continue
-            bestelling = {k: kolom_data[i].get('title','').strip() if k=="RTA" else kolom_data[i].text.strip() for k, i in kolom_indices.items() if i < len(kolom_data)}
+            bestelling = {}
+            for k, i in kolom_indices.items():
+                if i < len(kolom_data):
+                    bestelling[k] = kolom_data[i].get_text(strip=True)
+            
+            # Haal ReisId op uit de link
+            if 11 < len(kolom_data):
+                schip_cel = kolom_data[11]
+                link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx\?ReisId='))
+                if link_tag:
+                    match = re.search(r'ReisId=(\d+)', link_tag['href'])
+                    if match:
+                        bestelling['ReisId'] = match.group(1)
             bestellingen.append(bestelling)
         return bestellingen
     except Exception as e:
         logging.error(f"Error bij ophalen bestellingen: {e}")
         return []
+
+def haal_pta_van_reisplan(session, reis_id):
+    """Haalt de PTA voor Saeftinghe - Zandvliet op van de reisplan detailpagina."""
+    if not reis_id:
+        return None
+    try:
+        url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'lxml')
+        
+        for table in soup.find_all('table'):
+            for row in table.find_all('tr'):
+                cells = row.find_all('td')
+                if any("Saeftinghe - Zandvliet" in cell.get_text() for cell in cells):
+                    pta_cel_index = 3
+                    if len(cells) > pta_cel_index:
+                        pta_raw = cells[pta_cel_index].get_text(strip=True)
+                        if pta_raw:
+                            logging.info(f"PTA gevonden voor ReisId {reis_id}: {pta_raw}")
+                            try:
+                                dt_obj = datetime.strptime(pta_raw, '%d-%m %H:%M')
+                                now = datetime.now()
+                                dt_obj = dt_obj.replace(year=now.year)
+                                if dt_obj < now - timedelta(days=180):
+                                    dt_obj = dt_obj.replace(year=now.year + 1)
+                                return dt_obj.strftime("%d/%m/%y %H:%M")
+                            except ValueError:
+                                logging.warning(f"Kon PTA formaat '{pta_raw}' niet parsen voor ReisId {reis_id}.")
+                                return pta_raw
+        return None
+    except Exception as e:
+        logging.error(f"Fout bij ophalen van reisplan voor ReisId {reis_id}: {e}")
+        return None
 
 def filter_dubbele_schepen(bestellingen_lijst):
     schepen_gegroepeerd = defaultdict(list)
@@ -216,7 +262,7 @@ def format_wijzigingen_email(wijzigingen):
         body.append(tekst)
     return "\n\n".join(body)
 
-def filter_snapshot_schepen(bestellingen):
+def filter_snapshot_schepen(bestellingen, session):
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
@@ -232,11 +278,15 @@ def filter_snapshot_schepen(bestellingen):
                     gefilterd["UITGAAND"].append(b)
             elif b.get("Type") == "I":
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
-                    entry_point = b.get('Entry Point', '').lower()
-                    eta_dt = None
-                    if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
-                    elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
-                    b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M") if eta_dt else 'N/A'
+                    pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
+                    b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
+                    if b['berekende_eta'] == 'N/A':
+                        entry_point = b.get('Entry Point', '').lower()
+                        eta_dt = None
+                        if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
+                        elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
+                        if eta_dt:
+                            b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError): continue
     return gefilterd
@@ -250,7 +300,7 @@ def format_snapshot_email(snapshot_data):
             besteltijd_str = schip.get('Besteltijd', 'N/A')
             loods = schip.get('Loods', 'N/A')
             eta_str = schip.get('berekende_eta', 'N/A')
-            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | Berekende ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
+            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | ETA Saeftinghe: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
     body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---\n"
@@ -281,7 +331,7 @@ def verstuur_email(onderwerp, inhoud):
 
 # --- TAAK-SPECIFIEKE FUNCTIE VOOR DE KNOP ---
 def force_snapshot_task():
-    """Genereert een nieuw overzicht en werkt de webpagina bij (stuurt GEEN e-mail)."""
+    """Voert alleen de logica uit om een nieuw overzicht te genereren en versturen."""
     session = requests.Session()
     if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
@@ -290,10 +340,12 @@ def force_snapshot_task():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
     inhoud = format_snapshot_email(snapshot_data)
     
-    # De verstuur_email() regel is hier verwijderd.
+    # Verstuur GEEN e-mail bij forceren
+    # onderwerp = f"LIS Overzicht (Geforceerd) - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
+    # verstuur_email(onderwerp, inhoud)
     logging.info("Geforceerd overzicht gegenereerd voor webpagina.")
     
     with data_lock:
@@ -302,7 +354,6 @@ def force_snapshot_task():
             "content": inhoud
         }
 
-    # Sla de bijgewerkte snapshot op in de cloud
     current_state = load_state_from_jsonbin()
     if current_state is None:
         current_state = {}
@@ -364,7 +415,7 @@ def main():
         current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
         if current_key != last_report_key:
             logging.info(f"Tijd voor gepland rapport van {tijdstip_voor_rapport.strftime('%H:%M')}")
-            snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
+            snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
             inhoud = format_snapshot_email(snapshot_data)
             onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
             verstuur_email(onderwerp, inhoud)
