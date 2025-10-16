@@ -217,43 +217,28 @@ def format_wijzigingen_email(wijzigingen):
     return "\n\n".join(body)
 
 def filter_snapshot_schepen(bestellingen):
-    """Filtert de schepen voor de overzichtsmail met de robuuste ETA-berekening."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     nu = datetime.now()
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
-    
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str:
-                continue
-            
+            if not besteltijd_str: continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-
             if b.get("Type") == "U":
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
-
             elif b.get("Type") == "I":
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
-                    # Gebruik .lower() om de controle case-insensitief te maken
                     entry_point = b.get('Entry Point', '').lower()
                     eta_dt = None
-                    
-                    # Zoek naar sleutelwoorden in plaats van een exacte match
-                    if "wandelaar" in entry_point:
-                        eta_dt = besteltijd + timedelta(hours=6)
-                    elif "steenbank" in entry_point:
-                        eta_dt = besteltijd + timedelta(hours=7)
-                    
+                    if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
+                    elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                     b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M") if eta_dt else 'N/A'
                     gefilterd["INKOMEND"].append(b)
-
-        except (ValueError, TypeError):
-            continue
-            
+        except (ValueError, TypeError): continue
     return gefilterd
 
 def format_snapshot_email(snapshot_data):
@@ -296,7 +281,7 @@ def verstuur_email(onderwerp, inhoud):
 
 # --- TAAK-SPECIFIEKE FUNCTIE VOOR DE KNOP ---
 def force_snapshot_task():
-    """Voert alleen de logica uit om een nieuw overzicht te genereren en versturen."""
+    """Genereert een nieuw overzicht en werkt de webpagina bij (stuurt GEEN e-mail)."""
     session = requests.Session()
     if not login(session): return
     nieuwe_bestellingen = haal_bestellingen_op(session)
@@ -307,8 +292,9 @@ def force_snapshot_task():
     
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen)
     inhoud = format_snapshot_email(snapshot_data)
-    onderwerp = f"LIS Overzicht (Geforceerd) - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
-    verstuur_email(onderwerp, inhoud)
+    
+    # De verstuur_email() regel is hier verwijderd.
+    logging.info("Geforceerd overzicht gegenereerd voor webpagina.")
     
     with data_lock:
         app_state["latest_snapshot"] = {
@@ -316,6 +302,7 @@ def force_snapshot_task():
             "content": inhoud
         }
 
+    # Sla de bijgewerkte snapshot op in de cloud
     current_state = load_state_from_jsonbin()
     if current_state is None:
         current_state = {}
