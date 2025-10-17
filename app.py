@@ -168,60 +168,50 @@ def haal_bestellingen_op(session):
         return []
 
 def haal_pta_van_reisplan(session, reis_id):
-    """Haalt de ONDERSTE PTA voor Saeftinghe - Zandvliet op van de reisplan detailpagina (super robuuste versie)."""
+    """Haalt de ONDERSTE PTA voor Saeftinghe - Zandvliet op van de reisplan detailpagina (zeer robuuste versie)."""
     if not reis_id:
         return None
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
-        response = session.get(url, timeout=15)
+        response = session.get(url, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
-
-        # Zoek alle tabelkoppen die 'Saeftinghe - Zandvliet' bevatten.
-        headers = soup.find_all(['th', 'td'], text=re.compile("Saeftinghe - Zandvliet", re.IGNORECASE))
-        if not headers:
-            logging.warning(f"Kolomkop 'Saeftinghe - Zandvliet' niet gevonden voor ReisId {reis_id}")
-            return None
         
-        saeftinghe_header = headers[-1]
-        
-        parent_row = saeftinghe_header.find_parent('tr')
-        if not parent_row: return None
-        
-        all_headers_in_row = parent_row.find_all(['th', 'td'])
-        col_index = -1
-        for i, header in enumerate(all_headers_in_row):
-            if header == saeftinghe_header:
-                col_index = i
-                break
-        
-        if col_index == -1:
-            logging.warning(f"Kon kolomindex niet bepalen voor ReisId {reis_id}")
-            return None
-
-        parent_table = saeftinghe_header.find_parent('table')
-        if not parent_table: return None
-
         laatste_pta_gevonden = None
-        pta_pattern = re.compile(r'(\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2})')
-        
-        for row in parent_table.find_all('tr'):
-            cells = row.find_all('td')
-            if len(cells) > col_index:
-                cell_text = cells[col_index].get_text(strip=True)
-                match = pta_pattern.search(cell_text)
-                if match:
-                    laatste_pta_gevonden = match.group(1)
+        # Regex to find a date like '17-10 04:08'
+        pta_pattern = re.compile(r'\d{2}-\d{2} \d{2}:\d{2}')
+
+        # Zoek alle tabelrijen op de pagina
+        for row in soup.find_all('tr'):
+            # Controleer of deze rij de gewenste locatie bevat
+            if row.find(text=re.compile("Saeftinghe - Zandvliet")):
+                # Doorzoek alle cellen in deze specifieke rij
+                for cell in row.find_all('td'):
+                    match = pta_pattern.search(cell.get_text())
+                    if match:
+                        # We hebben een PTA-kandidaat gevonden. Onthoud deze.
+                        # Omdat we door alle rijen lopen, wordt de laatste die we vinden automatisch onthouden.
+                        laatste_pta_gevonden = match.group(0)
         
         if laatste_pta_gevonden:
             logging.info(f"Laatste PTA gevonden voor ReisId {reis_id}: {laatste_pta_gevonden}")
-            return laatste_pta_gevonden
+            try:
+                # Converteer 'dd-mm HH:MM' naar het gewenste formaat 'dd/mm/yy HH:MM'
+                dt_obj = datetime.strptime(laatste_pta_gevonden, '%d-%m %H:%M')
+                now = datetime.now()
+                dt_obj = dt_obj.replace(year=now.year)
+                # Correctie voor het nieuwe jaar
+                if dt_obj < now - timedelta(days=180):
+                    dt_obj = dt_obj.replace(year=now.year + 1)
+                return dt_obj.strftime("%d/%m/%y %H:%M")
+            except ValueError:
+                logging.warning(f"Kon PTA formaat '{laatste_pta_gevonden}' niet parsen voor ReisId {reis_id}.")
+                return laatste_pta_gevonden # Geef de onbewerkte tekst terug als parsen mislukt
         
-        logging.warning(f"Geen PTA gevonden in kolom {col_index} voor 'Saeftinghe - Zandvliet' voor ReisId {reis_id}")
+        logging.warning(f"Geen rij met een geldige PTA voor 'Saeftinghe - Zandvliet' gevonden voor ReisId {reis_id}")
         return None
-
     except Exception as e:
-        logging.error(f"Algemene fout bij ophalen van reisplan voor ReisId {reis_id}: {e}")
+        logging.error(f"Fout bij ophalen van reisplan voor ReisId {reis_id}: {e}")
         return None
 
 def filter_snapshot_schepen(bestellingen, session):
@@ -274,6 +264,44 @@ def format_snapshot_email(snapshot_data):
         body += "Geen schepen die aan de criteria voldoen.\n"
     return body
 
+# ... (De rest van de functies: vergelijk_bestellingen, format_wijzigingen_email, verstuur_email, force_snapshot_task en main blijven ongewijzigd) ...
+def vergelijk_bestellingen(oude, nieuwe):
+    oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(oude) if b.get('Schip')}
+    wijzigingen = []
+    nu = datetime.now()
+    for n_best in filter_dubbele_schepen(nieuwe):
+        n_schip_raw = n_best.get('Schip')
+        if not n_schip_raw: continue
+        n_schip_gekuist = re.sub(r'\s*\(d\)\s*$', '', n_schip_raw).strip()
+        if n_schip_gekuist not in oude_dict: continue
+        o_best = oude_dict[n_schip_gekuist]
+        diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
+        if diff:
+            if not n_best.get('Besteltijd', '').strip(): continue
+            relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
+            if not relevante.intersection(diff.keys()): continue
+            rapporteer = True
+            type_schip = n_best.get('Type')
+            try:
+                if type_schip == 'I':
+                    if len(diff) == 1 and 'ETA/ETD' in diff: rapporteer = False
+                    if rapporteer and o_best.get("Besteltijd") and datetime.strptime(o_best.get("Besteltijd"), "%d/%m/%y %H:%M") > (nu + timedelta(hours=8)): rapporteer = False
+                elif type_schip == 'U':
+                    if n_best.get("Besteltijd") and datetime.strptime(n_best.get("Besteltijd"), "%d/%m/%y %H:%M") > (nu + timedelta(hours=16)): rapporteer = False
+            except (ValueError, TypeError): pass
+            if rapporteer and 'zeebrugge' in n_best.get('Entry Point', '').lower(): rapporteer = False
+            if rapporteer: wijzigingen.append({'Schip': n_schip_raw, 'wijzigingen': diff})
+    return wijzigingen
+
+def format_wijzigingen_email(wijzigingen):
+    body = []
+    for w in wijzigingen:
+        s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
+        tekst = f"Wijziging voor '{s_naam}':\n"
+        tekst += "\n".join([f"   - {k}: '{v['oud']}' -> '{v['nieuw']}'" for k, v in w['wijzigingen'].items()])
+        body.append(tekst)
+    return "\n\n".join(body)
+
 def verstuur_email(onderwerp, inhoud):
     if not all([SMTP_SERVER, EMAIL_USER, EMAIL_PASS, ONTVANGER_EMAIL]):
         logging.error("E-mail niet verstuurd: SMTP-instellingen ontbreken.")
@@ -291,7 +319,6 @@ def verstuur_email(onderwerp, inhoud):
     except Exception as e:
         logging.error(f"E-mail versturen mislukt: {e}")
 
-# --- TAAK-SPECIFIEKE FUNCTIE VOOR DE KNOP ---
 def force_snapshot_task():
     session = requests.Session()
     if not login(session): return
@@ -309,7 +336,6 @@ def force_snapshot_task():
     current_state["web_snapshot"] = app_state["latest_snapshot"]
     save_state_to_jsonbin(current_state)
 
-# --- HOOFDFUNCTIE (voor de cron job) ---
 def main():
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
         logging.critical("FATALE FOUT: Essentiële Environment Variables zijn niet ingesteld!")
@@ -328,9 +354,19 @@ def main():
     nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen: return
     if oude_bestellingen:
-        # De logica voor het vergelijken van wijzigingen is hier weggelaten voor de duidelijkheid
-        # maar moet hier staan.
-        pass
+        wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
+        if wijzigingen:
+            inhoud = format_wijzigingen_email(wijzigingen)
+            onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
+            verstuur_email(onderwerp, inhoud)
+            with data_lock:
+                app_state["change_history"].appendleft({
+                    "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                    "onderwerp": onderwerp,
+                    "content": inhoud
+                })
+        else:
+            logging.info("Geen relevante wijzigingen gevonden.")
     else:
         logging.info("Eerste run, basislijn wordt opgeslagen.")
     brussels_tz = pytz.timezone('Europe/Brussels')
@@ -351,7 +387,10 @@ def main():
             verstuur_email(onderwerp, inhoud)
             last_report_key = current_key
             with data_lock:
-                app_state["latest_snapshot"] = {"timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), "content": inhoud}
+                app_state["latest_snapshot"] = {
+                    "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
+                    "content": inhoud
+                }
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
@@ -360,4 +399,3 @@ def main():
     }
     save_state_to_jsonbin(nieuwe_staat)
     logging.info("--- Cron Job Voltooid ---")
-
