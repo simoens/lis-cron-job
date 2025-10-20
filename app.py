@@ -171,7 +171,11 @@ def haal_bestellingen_op(session):
             bestelling = {}
             for k, i in kolom_indices.items():
                 if i < len(kolom_data):
-                    bestelling[k] = kolom_data[i].get_text(strip=True)
+                    value = kolom_data[i].get_text(strip=True)
+                    # Vervang "[Loods]" door een duidelijkere tekst.
+                    if k == "Loods" and "[Loods]" in value:
+                        value = "Loods werd toegewezen"
+                    bestelling[k] = value
             
             # Extract the 'ReisId' from the link in the 'Schip' column.
             if 11 < len(kolom_data):
