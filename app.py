@@ -279,7 +279,7 @@ def format_snapshot_email(snapshot_data):
             besteltijd_str = schip.get('Besteltijd', 'N/A')
             loods = schip.get('Loods', 'N/A')
             eta_str = schip.get('berekende_eta', 'N/A')
-            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | CP: {eta_str.ljust(15)} | Loods: {loods}\n"
+            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
         
