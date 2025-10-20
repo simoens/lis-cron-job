@@ -1,12 +1,4 @@
-21/10 0825 Brussel Zuid -> Frankfurt 1117
-21/10 1124 Frankfurt -> Stuttgart 1238
-21/10 1251 Stuttgart -> München 1449
-
-23/10 1048 München -> Frankfurt 1404
-23/10 1427 Frankfurt -> Brussel Zuid 1735
-
-Bayer's Boardinghouse & Hotel
-Schwanthalerstraße 45import requests
+import requests
 from bs4 import BeautifulSoup
 import logging
 import time
