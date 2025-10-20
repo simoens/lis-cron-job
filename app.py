@@ -283,7 +283,7 @@ def format_snapshot_email(snapshot_data):
             besteltijd_str = schip.get('Besteltijd', 'N/A')
             loods = schip.get('Loods', 'N/A')
             eta_str = schip.get('berekende_eta', 'N/A')
-            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
+            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | CP: {eta_str.ljust(15)} | Loods: {loods}\n"
     else:
         body += "Geen schepen die aan de criteria voldoen.\n"
         
@@ -440,6 +440,21 @@ def force_snapshot_task():
     current_state["web_snapshot"] = app_state["latest_snapshot"]
     save_state_to_jsonbin(current_state)
 
+def genereer_en_update_snapshot(nieuwe_bestellingen, session):
+    """Generates a new snapshot from existing data and updates the global app_state."""
+    logging.info("Een nieuw overzicht wordt gegenereerd voor de webpagina n.a.v. een wijziging.")
+    brussels_tz = pytz.timezone('Europe/Brussels')
+    nu_brussels = datetime.now(brussels_tz)
+    
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
+    inhoud = format_snapshot_email(snapshot_data)
+    
+    with data_lock:
+        app_state["latest_snapshot"] = {
+            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
+            "content": inhoud
+        }
+
 def main():
     """The main function of the scraper, executed by the cron job trigger."""
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
@@ -481,6 +496,9 @@ def main():
                     "onderwerp": onderwerp,
                     "content": inhoud
                 })
+            
+            # Forceer een update van het overzicht op de webpagina
+            genereer_en_update_snapshot(nieuwe_bestellingen, session)
         else:
             logging.info("No relevant changes found.")
     else:
@@ -533,3 +551,4 @@ def main():
 #     # Make sure to set the SECRET_KEY environment variable.
 #     # os.environ['SECRET_KEY'] = 'your-very-secret-key-here'
 #     app.run(debug=True, port=5001)
+
