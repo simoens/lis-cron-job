@@ -329,72 +329,127 @@ def filter_dubbele_schepen(bestellingen):
     return list(unieke_schepen.values())
 
 def vergelijk_bestellingen(oude, nieuwe):
-    """Compares old and new order lists and returns a list of relevant changes."""
-    # Create a dictionary of old orders for quick lookup, after removing duplicates.
-    oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(oude) if b.get('Schip')}
+    """Vergelijkt oude en nieuwe bestellijsten en rapporteert nieuwe, gewijzigde en verwijderde schepen."""
+    
+    # Maak dictionaries van beide lijsten voor snelle lookup
+    oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
+                 for b in filter_dubbele_schepen(oude) if b.get('Schip')}
+    nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
+                   for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
+    
+    # Haal de sets van scheepsnamen op
+    oude_schepen_namen = set(oude_dict.keys())
+    nieuwe_schepen_namen = set(nieuwe_dict.keys())
+
     wijzigingen = []
     nu = datetime.now()
+    
+    # --- Interne helper functie voor filtering ---
+    def moet_rapporteren(bestelling):
+        """Controleert of een bestelling binnen de relevante tijd en locatie valt."""
+        if not bestelling.get('Besteltijd', '').strip(): return False
+        
+        rapporteer = True
+        type_schip = bestelling.get('Type')
+        
+        try:
+            besteltijd = datetime.strptime(bestelling.get("Besteltijd"), "%d/%m/%y %H:%M")
+            if type_schip == 'I':
+                # Rapporteer inkomend alleen als besteltijd binnen 8u is
+                if not (nu - timedelta(hours=8) <= besteltijd <= nu + timedelta(hours=8)):
+                    rapporteer = False
+            elif type_schip == 'U':
+                # Rapporteer uitgaand alleen als besteltijd binnen 16u is
+                if not (nu <= besteltijd <= nu + timedelta(hours=16)):
+                    rapporteer = False
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
+            return False # Niet rapporteren bij ongeldige data
 
-    for n_best in filter_dubbele_schepen(nieuwe):
-        n_schip_raw = n_best.get('Schip')
-        if not n_schip_raw: continue
+        # Filter irrelevante locaties
+        if 'zeebrugge' in bestelling.get('Entry Point', '').lower():
+            rapporteer = False
+            
+        return rapporteer
+
+    # --- CASE 1: NIEUWE SCHEPEN ---
+    # Schepen die in de nieuwe lijst staan, maar niet in de oude
+    for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
+        n_best = nieuwe_dict[schip_naam]
+        if moet_rapporteren(n_best):
+            wijzigingen.append({
+                'Schip': n_best.get('Schip'), # Gebruik originele naam
+                'status': 'NIEUW',
+                'details': n_best 
+            })
+
+    # --- CASE 2: VERWIJDERDE SCHEPEN ---
+    # Schepen die in de oude lijst stonden, maar niet meer in de newe
+    for schip_naam in (oude_schepen_namen - nieuwe_schepen_namen):
+        o_best = oude_dict[schip_naam]
+        # Rapporteer verwijdering alleen als het een 'actieve' order was
+        if moet_rapporteren(o_best): 
+            wijzigingen.append({
+                'Schip': o_best.get('Schip'), # Gebruik originele naam
+                'status': 'VERWIJDERD',
+                'details': o_best
+            })
+
+    # --- CASE 3: GEWIJZIGDE SCHEPEN ---
+    # Schepen die in beide lijsten staan
+    for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
+        n_best = nieuwe_dict[schip_naam]
+        o_best = oude_dict[schip_naam]
         
-        n_schip_gekuist = re.sub(r'\s*\(d\)\s*$', '', n_schip_raw).strip()
-        
-        # Only compare ships that were present in the old list.
-        if n_schip_gekuist not in oude_dict: continue
-        
-        o_best = oude_dict[n_schip_gekuist]
-        
-        # Find differences between the old and new order for the same ship.
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
         
         if diff:
-            if not n_best.get('Besteltijd', '').strip(): continue
-            
             relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
-            if not relevante.intersection(diff.keys()): continue
-            
-            rapporteer = True
-            type_schip = n_best.get('Type')
-            
-            try:
-                if type_schip == 'I':
-                    # FIX: Don't ignore changes that are only ETA/ETD. This is often an important update.
-                    # if len(diff) == 1 and 'ETA/ETD' in diff: rapporteer = False
-                    
-                    # Do not report changes for orders far in the future.
-                    if rapporteer and o_best.get("Besteltijd") and datetime.strptime(o_best.get("Besteltijd"), "%d/%m/%y %H:%M") > (nu + timedelta(hours=8)):
-                        logging.info(f"Wijziging voor INKOMEND '{n_schip_raw}' overgeslagen: besteltijd is te ver in de toekomst.")
-                        rapporteer = False
-                elif type_schip == 'U':
-                    if n_best.get("Besteltijd") and datetime.strptime(n_best.get("Besteltijd"), "%d/%m/%y %H:%M") > (nu + timedelta(hours=16)):
-                        logging.info(f"Wijziging voor UITGAAND '{n_schip_raw}' overgeslagen: besteltijd is te ver in de toekomst.")
-                        rapporteer = False
-            except (ValueError, TypeError) as e:
-                 # FIX: Log the error instead of silently passing.
-                logging.warning(f"Datum/tijd parsefout bij vergelijken van '{n_schip_raw}': {e}")
-            
-            # Filter out irrelevant locations.
-            if rapporteer and 'zeebrugge' in n_best.get('Entry Point', '').lower():
-                logging.info(f"Wijziging voor '{n_schip_raw}' overgeslagen: Entry Point is Zeebrugge.")
-                rapporteer = False
-            
-            if rapporteer:
-                wijzigingen.append({'Schip': n_schip_raw, 'wijzigingen': diff})
-                
+            # Rapporteer alleen als een *relevante* kolom is gewijzigd
+            if relevante.intersection(diff.keys()):
+                # Rapporteer alleen als het schip nog/al relevant is
+                if moet_rapporteren(n_best) or moet_rapporteren(o_best):
+                    wijzigingen.append({
+                        'Schip': n_best.get('Schip'),
+                        'status': 'GEWIJZIGD',
+                        'wijzigingen': diff
+                    })
+                        
     return wijzigingen
 
 
 def format_wijzigingen_email(wijzigingen):
     """Formats the list of changes into a plain text email body."""
     body = []
+    
+    # Sorteer op status voor een netter overzicht
+    wijzigingen.sort(key=lambda x: x.get('status', ''))
+    
     for w in wijzigingen:
         s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
-        tekst = f"Wijziging voor '{s_naam}':\n"
-        # Detail each field that has changed.
-        tekst += "\n".join([f"   - {k}: '{v['oud']}' -> '{v['nieuw']}'" for k, v in w['wijzigingen'].items()])
+        status = w.get('status')
+        
+        if status == 'NIEUW':
+            details = w.get('details', {})
+            tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
+            tekst += f"    - Type: {details.get('Type', 'N/A')}\n"
+            tekst += f"    - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
+            tekst += f"    - ETA/ETD: {details.get('ETA/ETD', 'N/A')}\n"
+            tekst += f"    - Loods: {details.get('Loods', 'N/A')}"
+        
+        elif status == 'GEWIJZIGD':
+            tekst = f"*** GEWIJZIGD: '{s_naam}'\n"
+            tekst += "\n".join([f"    - {k}: '{v['oud']}' -> '{v['nieuw']}'" 
+                                for k, v in w['wijzigingen'].items() 
+                                if k in {'Besteltijd', 'ETA/ETD', 'Loods'}]) # Toon alleen relevante wijzigingen
+        
+        elif status == 'VERWIJDERD':
+            details = w.get('details', {})
+            tekst = f"--- VERWIJDERD: '{s_naam}'\n"
+            tekst += f"    - (Was type {details.get('Type', 'N/A')}, Besteltijd {details.get('Besteltijd', 'N/A')})"
+
         body.append(tekst)
+        
     return "\n\n".join(body)
 
 def verstuur_email(onderwerp, inhoud):
