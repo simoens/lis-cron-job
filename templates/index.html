@@ -96,7 +96,7 @@
             <div class="card-header">
                 <div class="header-title">
                     <h2>Laatste LIS Overzicht</h2>
-                    <div class="timestamp">Verstuurd op: {{ snapshot.timestamp }}</div>
+                    <div class="timestamp">Laatste update op: {{ snapshot.timestamp }}</div>
                 </div>
                 <form action="/force-snapshot" method="POST" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').innerText = 'Bezig...';">
                     <input type="hidden" name="secret" value="{{ secret_key }}">
