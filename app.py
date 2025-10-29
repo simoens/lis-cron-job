@@ -75,7 +75,7 @@ def force_snapshot_route():
  except Exception as e:
   logging.critical(f"FATAL ERROR during forced run: {e}")
  
- return redirect(url_for('home'))
+ return redirect(url_for('home')
 
 # --- ENVIRONMENT VARIABLES ---
 # Loading sensitive information and configuration from environment variables.
