@@ -70,8 +70,7 @@ def force_snapshot_route():
  
  logging.info("================== Manual FULL Run Triggered via Button ==================")
  try:
-  # We roepen hier nu de VOLLEDIGE main() functie aan.
-  # Deze doet alles: snapshot, change detection, en opslaan.
+  # DIT IS DE BELANGRIJKE WIJZIGING: Roep main() aan.
   main() 
  except Exception as e:
   logging.critical(f"FATAL ERROR during forced run: {e}")
