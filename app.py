@@ -63,18 +63,20 @@ def trigger_run():
 
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
- """Endpoint called by the button on the webpage to force a new snapshot."""
- secret = request.form.get('secret')
- if secret != os.environ.get('SECRET_KEY'):
-  abort(403)
- 
- logging.info("================== Manual Snapshot Triggered ==================")
- try:
-  force_snapshot_task()
- except Exception as e:
-  logging.critical(f"FATAL ERROR during forced snapshot: {e}")
- 
- return redirect(url_for('home'))
+ """Endpoint called by the button on the webpage to force a new snapshot AND change detection."""
+ secret = request.form.get('secret')
+ if secret != os.environ.get('SECRET_KEY'):
+  abort(403)
+ 
+ logging.info("================== Manual FULL Run Triggered via Button ==================")
+ try:
+  # We roepen hier nu de VOLLEDIGE main() functie aan.
+  # Deze doet alles: snapshot, change detection, en opslaan.
+  main() 
+ except Exception as e:
+  logging.critical(f"FATAL ERROR during forced run: {e}")
+ 
+ return redirect(url_for('home'))
 
 # --- ENVIRONMENT VARIABLES ---
 # Loading sensitive information and configuration from environment variables.
@@ -471,121 +473,99 @@ def verstuur_email(onderwerp, inhoud):
  except Exception as e:
   logging.error(f"Failed to send email: {e}")
 
-def force_snapshot_task():
- """Task to generate a new snapshot and update the web view and persistent state."""
- session = requests.Session()
- if not login(session): return
- 
- nieuwe_bestellingen = haal_bestellingen_op(session)
- if not nieuwe_bestellingen: return
- 
- brussels_tz = pytz.timezone('Europe/Brussels')
- nu_brussels = datetime.now(brussels_tz)
- 
- snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
- inhoud = format_snapshot_email(snapshot_data)
- logging.info("Forced snapshot generated for webpage.")
- 
- with data_lock:
-  app_state["latest_snapshot"] = {"timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), "content": inhoud}
-  
- current_state = load_state_from_jsonbin()
- if current_state is None: current_state = {}
- 
- current_state["web_snapshot"] = app_state["latest_snapshot"]
- save_state_to_jsonbin(current_state)
-
 def main():
- """The main function of the scraper, executed by the cron job trigger."""
- if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
-  logging.critical("FATAL ERROR: Essential Environment Variables are not set!")
-  return
-  
- vorige_staat = load_state_from_jsonbin()
- if vorige_staat is None:
-  vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
-  
- oude_bestellingen = vorige_staat.get("bestellingen", [])
- last_report_key = vorige_staat.get("last_report_key", "")
- 
- with data_lock:
-  app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
-  app_state["change_history"].clear()
-  app_state["change_history"].extend(vorige_staat.get("web_changes", []))
-  
- session = requests.Session()
- if not login(session): return
- 
- nieuwe_bestellingen = haal_bestellingen_op(session)
- if not nieuwe_bestellingen: return
+ """The main function of the scraper, executed by the cron job trigger."""
+ if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
+  logging.critical("FATAL ERROR: Essential Environment Variables are not set!")
+  return
+  
+ vorige_staat = load_state_from_jsonbin()
+ if vorige_staat is None:
+  logging.warning("No previous state found in jsonbin, starting fresh.")
+  vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
+  
+ oude_bestellingen = vorige_staat.get("bestellingen", [])
+ last_report_key = vorige_staat.get("last_report_key", "")
+ 
+ with data_lock:
+  app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
+  app_state["change_history"].clear()
+  app_state["change_history"].extend(vorige_staat.get("web_changes", []))
+  
+ session = requests.Session()
+ if not login(session):
+  logging.error("Login failed during main() run.")
+  return # Stop de uitvoering als login mislukt
+ 
+ nieuwe_bestellingen = haal_bestellingen_op(session)
+ if not newe_bestellingen:
+  logging.error("Fetching orders failed during main() run.")
+  return # Stop de uitvoering als ophalen mislukt
 
- # --- NIEUW: Genereer ALTIJD een snapshot ---
- # We genereren het snapshot nu direct na het ophalen, zodat de webpagina
- # elke 5 minuten een verse versie heeft.
- logging.info("Nieuw overzicht wordt gegenereerd voor de webpagina (elke run).")
- brussels_tz = pytz.timezone('Europe/Brussels')
- nu_brussels = datetime.now(brussels_tz)
- 
- snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
- snapshot_inhoud = format_snapshot_email(snapshot_data)
- 
- with data_lock:
-  app_state["latest_snapshot"] = {
-   "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-   "content": snapshot_inhoud
-  }
- 
- # --- Change Detection ---
- if oude_bestellingen:
-  wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
-  if wijzigingen:
-   inhoud = format_wijzigingen_email(wijzigingen)
-   onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
-   verstuur_email(onderwerp, inhoud)
-   
-   with data_lock:
-    app_state["change_history"].appendleft({
-     "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-     "onderwerp": onderwerp,
-     "content": inhoud
-    })
-   # De 'genereer_en_update_snapshot' functiecall is hier verwijderd,
-   # want dat is hierboven al gebeurd.
-  else:
-   logging.info("No relevant changes found.")
- else:
-  logging.info("First run, establishing baseline.")
-  
- # --- Scheduled Reporting ---
- report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
- tijdstip_voor_rapport = None
- 
- for report_hour, report_minute in report_times:
-  rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
-  if nu_brussels >= rapport_tijd_vandaag:
-   tijdstip_voor_rapport = rapport_tijd_vandaag
-   
- if tijdstip_voor_rapport:
-  current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
-  if current_key != last_report_key:
-   logging.info(f"Time for scheduled report of {tijdstip_voor_rapport.strftime('%H:%M')}")
-   
-   # Gebruik het snapshot dat we aan het begin al hebben gemaakt.
-   onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
-   verstuur_email(onderwerp, snapshot_inhoud) # Gebruik snapshot_inhoud
-   last_report_key = current_key
-   # We hoeven app_state["latest_snapshot"] hier niet meer bij te werken,
-   # want dat is aan het begin van main() al gebeurd.
-    
- # --- Save State for Next Run ---
- nieuwe_staat = {
-  "bestellingen": nieuwe_bestellingen,
-  "last_report_key": last_report_key,
-  "web_snapshot": app_state["latest_snapshot"], # Deze is nu ALTIJD up-to-date
-  "web_changes": list(app_state["change_history"])
- }
- save_state_to_jsonbin(nieuwe_staat)
- logging.info("--- Cron Job Completed ---")
+ # --- Genereer ALTIJD een snapshot ---
+ logging.info("Generating new snapshot for webpage (every run).")
+ brussels_tz = pytz.timezone('Europe/Brussels')
+ nu_brussels = datetime.now(brussels_tz)
+ 
+ snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
+ snapshot_inhoud = format_snapshot_email(snapshot_data)
+ 
+ with data_lock:
+  app_state["latest_snapshot"] = {
+   "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
+   "content": snapshot_inhoud
+  }
+ 
+ # --- Change Detection ---
+ if oude_bestellingen:
+  wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
+  if wijzigingen:
+   inhoud = format_wijzigingen_email(wijzigingen)
+   onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
+   logging.info(f"Found {len(wijzigingen)} changes, sending email.")
+   verstuur_email(onderwerp, inhoud)
+   
+   with data_lock:
+    app_state["change_history"].appendleft({
+     "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+     "onderwerp": onderwerp,
+     "content": inhoud
+    })
+  else:
+   logging.info("No relevant changes found.")
+ else:
+  logging.info("First run, establishing baseline.")
+  
+ # --- Scheduled Reporting ---
+ report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
+ tijdstip_voor_rapport = None
+ 
+ for report_hour, report_minute in report_times:
+  rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
+  # Zoek het LAATSTE rapport-tijdstip dat al gepasseerd is VANDAAG
+  if nu_brussels >= rapport_tijd_vandaag:
+   tijdstip_voor_rapport = rapport_tijd_vandaag
+   
+ if tijdstip_voor_rapport:
+  current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
+  if current_key != last_report_key:
+   logging.info(f"Time for scheduled report of {tijdstip_voor_rapport.strftime('%H:%M')}. Key: {current_key}")
+   
+   onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
+   verstuur_email(onderwerp, snapshot_inhoud)
+   last_report_key = current_key
+  else:
+   logging.info(f"Scheduled report for {current_key} already sent. Skipping.")
+   
+ # --- Save State for Next Run ---
+ nieuwe_staat = {
+  "bestellingen": nieuwe_bestellingen,
+  "last_report_key": last_report_key,
+  "web_snapshot": app_state["latest_snapshot"], 
+  "web_changes": list(app_state["change_history"])
+ }
+ save_state_to_jsonbin(nieuwe_staat)
+ logging.info("--- Run Completed, state saved to jsonbin. ---")
 
 # The main execution block is commented out because this script is intended
 # to be run by a WSGI server like Gunicorn, not directly.
