@@ -7,7 +7,7 @@ import os
 import json 
 from collections import deque
 import pytz
-from flask import Flask, render_template, request, abort, redirect, url_for
+from flask import Flask, render_template, request, abort, redirect, url_for, jsonify # <-- VOEG JSOINFY TOE
 import threading
 import time
 # from urllib.parse import urljoin # Import is verwijderd
@@ -95,6 +95,17 @@ def force_snapshot_route():
     logging.info("================== Manual Background Run Triggered via Button ==================")
     threading.Thread(target=main_task).start()
     return redirect(url_for('home'))
+
+@app.route('/status')
+def status_check():
+    """Een lichtgewicht endpoint die de client-side JS kan pollen."""
+    state = load_state_from_jsonbin()
+    if state and "web_snapshot" in state and "timestamp" in state["web_snapshot"]:
+        return jsonify({"timestamp": state["web_snapshot"]["timestamp"]})
+    else:
+        # Stuur de in-memory timestamp als fallback
+        with data_lock:
+            return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 # --- ENVIRONMENT VARIABLES ---
 USER = os.environ.get('LIS_USER')
