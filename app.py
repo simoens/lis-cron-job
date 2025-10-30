@@ -10,6 +10,7 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
 import time
+from urllib.parse import urljoin
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -173,6 +174,7 @@ def haal_bestellingen_op(session):
                         value = "Loods werd toegewezen"
                     bestelling[k] = value
             
+            # Haal 'ReisId' op uit 'Schip' kolom (index 11)
             if 11 < len(kolom_data):
                 schip_cel = kolom_data[11]
                 link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx\?ReisId='))
@@ -181,6 +183,18 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
+            # --- NIEUW BLOK ---
+            # Haal 'GisLink' op uit 'C' kolom (index 2)
+            if 2 < len(kolom_data):
+                gis_cel = kolom_data[2]
+                link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
+                if link_tag and link_tag.get('href'):
+                    # Maak de relatieve URL (bv. 'Gis.aspx?key=...')
+                    # om tot een volledige URL (https://.../Gis.aspx?key=...)
+                    base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+                    bestelling['GisLink'] = urljoin(base_page_url, link_tag['href'])
+            # --- EINDE NIEUW BLOK ---
+
             bestellingen.append(bestelling)
         return bestellingen
     except Exception as e:
