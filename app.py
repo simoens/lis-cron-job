@@ -565,37 +565,6 @@ def main():
     }
     save_state_to_jsonbin(nieuwe_staat)
     logging.info("--- Run Completed, state saved to jsonbin. ---")
-  
-    # --- Scheduled Reporting ---
-    report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
-    tijdstip_voor_rapport = None
- 
- for report_hour, report_minute in report_times:
-  rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
-  # Zoek het LAATSTE rapport-tijdstip dat al gepasseerd is VANDAAG
-  if nu_brussels >= rapport_tijd_vandaag:
-   tijdstip_voor_rapport = rapport_tijd_vandaag
-   
- if tijdstip_voor_rapport:
-  current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
-  if current_key != last_report_key:
-   logging.info(f"Time for scheduled report of {tijdstip_voor_rapport.strftime('%H:%M')}. Key: {current_key}")
-   
-   onderwerp = f"LIS Overzicht - {nu_brussels.strftime('%d/%m/%Y %H:%M')}"
-   verstuur_email(onderwerp, snapshot_inhoud)
-   last_report_key = current_key
-  else:
-   logging.info(f"Scheduled report for {current_key} already sent. Skipping.")
-   
- # --- Save State for Next Run ---
- nieuwe_staat = {
-  "bestellingen": nieuwe_bestellingen,
-  "last_report_key": last_report_key,
-  "web_snapshot": app_state["latest_snapshot"], 
-  "web_changes": list(app_state["change_history"])
- }
- save_state_to_jsonbin(nieuwe_staat)
- logging.info("--- Run Completed, state saved to jsonbin. ---")
 
 # The main execution block is commented out because this script is intended
 # to be run by a WSGI server like Gunicorn, not directly.
