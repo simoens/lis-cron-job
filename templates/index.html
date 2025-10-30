@@ -2,133 +2,189 @@
 <html lang="nl">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="300"> <!-- Pagina elke 5 minuten verversen -->
-    <title>LIS Scraper Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LIS Scraper Overzicht</title>
     <style>
-        /* Nieuw kleurenschema gebaseerd op de afbeelding */
-        :root {
-            --accent-yellow: #ffdd00;
-            --primary-black: #2d2a26;
-            --primary-black-hover: #4a4a4a; /* Iets lichtere tint voor hover */
-            --secondary-grey: #afadab;
-            --background-light-grey: #f0f2f5;
-            --card-white: #ffffff;
-            --text-dark: #2d2a26; /* Gebruik het primaire zwart voor tekst */
-            --text-light: #606770;
-            --border-grey: #dddfe2;
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+            color: #333;
         }
-
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
-            margin: 0; 
-            background-color: var(--background-light-grey); 
-            color: var(--text-dark); 
+        h1, h2, h3 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 5px;
         }
-        .container { max-width: 900px; margin: 2em auto; }
-        .card { 
-            background-color: var(--card-white); 
-            border-radius: 8px; 
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
-            margin-bottom: 2em; 
-            overflow: hidden; 
+        h3 {
+            margin-top: 30px;
+            font-size: 1.1em;
+            color: #555;
         }
-        .card-header { 
-            background-color: var(--card-white); 
-            padding: 12px 16px; 
-            border-bottom: 1px solid var(--border-grey); 
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            /* Gele accent-balk */
-            border-left: 5px solid var(--accent-yellow);
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
         }
-        .header-title h2 { 
-            margin: 0; 
-            font-size: 1.2em; 
-            color: var(--primary-black); /* Gebruik primair zwart */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            font-size: 0.9em;
         }
-        .header-title .timestamp { 
-            font-size: 0.8em; 
-            color: var(--text-light); 
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
         }
-        .card-body { padding: 16px; }
-        pre { 
-            white-space: pre-wrap; 
-            word-wrap: break-word; 
-            background-color: #f5f6f7; 
-            padding: 12px; 
-            border-radius: 6px; 
-            font-family: monospace; 
-            font-size: 0.9em; 
-            line-height: 1.4; 
+        th {
+            background-color: #f2f2f2;
         }
-        h1 { text-align: center; color: var(--primary-black); }
-        .change-item { border-bottom: 1px solid #eee; padding-bottom: 1em; margin-bottom: 1em; }
-        .change-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-        
-        /* Knop in primair zwart */
-        .force-button { 
-            display: inline-block; 
-            padding: 8px 14px; 
-            font-size: 0.85em; 
-            font-weight: bold; 
-            cursor: pointer; 
-            text-align: center; 
-            text-decoration: none; 
-            outline: none; 
-            color: #fff; 
-            background-color: var(--primary-black);
-            border: none; 
-            border-radius: 6px; 
-            box-shadow: 0 2px #666;
-            transition: background-color 0.2s;
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
         }
-        .force-button:hover { background-color: var(--primary-black-hover); }
-        .force-button:active { transform: translateY(1px); box-shadow: 0 1px #444; }
-        .force-button:disabled { background-color: var(--secondary-grey); color: #2d2a26; cursor: not-allowed; box-shadow: none; }
+        a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        .change-item {
+            background-color: #fdfdfd;
+            border: 1px solid #eee;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+        }
+        .change-header {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        pre {
+            white-space: pre-wrap; /* Zorgt dat de tekst netjes afbreekt */
+            word-wrap: break-word;
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
+
     <div class="container">
-        <h1>LIS Dashboard</h1>
+        <h1>LIS Scraper Overzicht</h1>
+        
+        <form action="{{ url_for('force_snapshot_route') }}" method="POST" style="margin-bottom: 20px;">
+            <input type="hidden" name="secret" value="{{ secret_key }}">
+            <button type="submit" class="button">Forceer Nieuw Overzicht</button>
+        </form>
 
-        <div class="card">
-            <div class="card-header">
-                <div class="header-title">
-                    <h2>Laatste LIS Overzicht</h2>
-                    <div class="timestamp">Laatste update op: {{ snapshot.timestamp }}</div>
-                </div>
-                <form action="/force-snapshot" method="POST" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').innerText = 'Bezig...';">
-                    <input type="hidden" name="secret" value="{{ secret_key }}">
-                    <button type="submit" class="force-button">
-                        Forceer Overzicht
-                    </button>
-                </form>
-            </div>
-            <div class="card-body">
-                <pre>{{ snapshot.content }}</pre>
-            </div>
+        <hr>
+
+        <h2>Laatste Overzicht</h2>
+        <p>Gegenereerd op: {{ snapshot.timestamp }}</p>
+
+        <div class="snapshot-content">
+            <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
+            
+            {% if snapshot.content_data and snapshot.content_data.INKOMEND %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Schip</th>
+                            <th>Besteltijd</th>
+                            <th>ETA Saeftinghe</th>
+                            <th>Loods</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for schip in snapshot.content_data.INKOMEND %}
+                        <tr>
+                            <td>
+                                {% if schip.GisLink %}
+                                    <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                {% else %}
+                                    {{ schip.Schip }}
+                                {% endif %}
+                            </td>
+                            <td>{{ schip.Besteltijd }}</td>
+                            <td>{{ schip.berekende_eta }}</td>
+                            <td>{{ schip.Loods }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Geen schepen die aan de criteria voldoen.</p>
+            {% endif %}
+
+            <h3>--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---</h3>
+            
+            {% if snapshot.content_data and snapshot.content_data.UITGAAND %}
+                 <table>
+                    <thead>
+                        <tr>
+                            <th>Schip</th>
+                            <th>Besteltijd</th>
+                            <th>Loods</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for schip in snapshot.content_data.UITGAAND %}
+                        <tr>
+                            <td>
+                                {% if schip.GisLink %}
+                                    <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                {% else %}
+                                    {{ schip.Schip }}
+                                {% endif %}
+                            </td>
+                            <td>{{ schip.Besteltijd }}</td>
+                            <td>{{ schip.Loods }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Geen schepen die aan de criteria voldoen.</p>
+            {% endif %}
         </div>
 
-        <div class="card">
-            <div class="card-header">
-                <div class="header-title">
-                    <h2>Recente Wijzigingen (max 10)</h2>
-                </div>
-            </div>
-            <div class="card-body">
-                {% for change in changes %}
-                    <div class="change-item">
-                        <div class="timestamp"><strong>{{ change.onderwerp }}</strong> - verstuurd op: {{ change.timestamp }}</div>
-                        <pre>{{ change.content }}</pre>
+        <hr style="margin-top: 30px;">
+
+        <h2>Wijzigingsgeschiedenis (Laatste 10)</h2>
+        {% if changes %}
+            {% for change in changes %}
+                <div class="change-item">
+                    <div class="change-header">
+                        [{{ change.timestamp }}] - {{ change.onderwerp }}
                     </div>
-                {% else %}
-                    <p>Nog geen wijzigingen gedetecteerd.</p>
-                {% endfor %}
-            </div>
-        </div>
+                    <pre>{{ change.content }}</pre>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>Nog geen wijzigingen gedetecteerd.</p>
+        {% endif %}
 
     </div>
+
 </body>
 </html>
-
