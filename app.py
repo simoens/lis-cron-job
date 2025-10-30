@@ -507,7 +507,7 @@ def main():
     # --- Save State for Next Run ---
     # --- HIER IS DE TYPEFOUT-FIX ---
     nieuwe_staat = {
-        "bestellingen": newe_bestellingen, # <-- Dit is de GECORRIGEERDE typefout
+        "bestellingen": nieuwe_bestellingen, # <-- Dit is de GECORRIGEERDE typefout
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
