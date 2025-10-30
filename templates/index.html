@@ -3,35 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LIS Overzicht</title>
+    <title>LIS Dashboard</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 20px;
-            background-color: #f9f9f9;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
             color: #333;
-        }
-        h1, h2, h3 {
-            border-bottom: 2px solid #eee;
-            padding-bottom: 5px;
-        }
-        h2 {
-            font-size: 1.5em;
-            margin-top: 25px;
-        }
-        h3 {
-            margin-top: 30px;
-            font-size: 1.1em;
-            color: #555;
         }
         .container {
             max-width: 1200px;
-            margin: 0 auto;
+            margin: 20px auto;
             background-color: #fff;
-            padding: 20px;
             border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
+        
+        /* Header styling uit screenshot */
+        .header-bar {
+            background-color: #343a40; /* Donkergrijs/zwart */
+            color: white;
+            padding: 20px 30px;
+            border-radius: 8px 8px 0 0;
+        }
+        .header-bar::after {
+            content: "";
+            display: table;
+            clear: both;
+        }
+        .header-bar h1 {
+            border: none;
+            margin: 0;
+            padding: 0;
+            font-size: 1.8em;
+            float: left;
+        }
+        .button {
+            float: right;
+            background-color: #6c757d; /* Grijze knop */
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-top: 2px; /* Lijn knop uit met titel */
+        }
+        .button:hover {
+            background-color: #5a6268;
+        }
+        
+        /* Content styling */
+        .content-box {
+            padding: 10px 30px 30px 30px;
+        }
+
+        /* Sectie headers met geel accent */
+        h2 {
+            font-size: 1.4em;
+            border-left: 5px solid #f0c14b; /* Geel accent */
+            padding-left: 15px;
+            margin-top: 25px;
+            margin-bottom: 10px;
+        }
+        h3 {
+            margin-top: 25px;
+            font-size: 1.1em;
+            color: #555;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        
+        /* Tabellen */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -52,22 +98,13 @@
         a {
             color: #007bff;
             text-decoration: none;
+            font-weight: 500;
         }
         a:hover {
             text-decoration: underline;
         }
-        .button {
-            background-color: #007bff;
-            color: white;
-            padding: 10px 15px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 1em;
-        }
-        .button:hover {
-            background-color: #0056b3;
-        }
+        
+        /* Wijzigingen */
         .change-item {
             background-color: #fdfdfd;
             border: 1px solid #eee;
@@ -81,132 +118,136 @@
             margin-bottom: 10px;
         }
         pre {
-            white-space: pre-wrap; /* Zorgt dat de tekst netjes afbreekt */
+            white-space: pre-wrap;
             word-wrap: break-word;
             background-color: #f4f4f4;
             padding: 15px;
             border-radius: 5px;
             font-family: "Courier New", Courier, monospace;
             font-size: 0.9em;
+            border: 1px solid #eee;
         }
         .fallback-note {
             background-color: #fffbe6;
             border: 1px solid #ffe58f;
-            padding: 10px;
+            padding: 15px;
             border-radius: 4px;
             margin-top: 15px;
+            font-weight: 500;
         }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h1>LIS Overzicht Dashboard</h1>
         
-        <form action="{{ url_for('force_snapshot_route') }}" method="POST" style="margin-bottom: 20px;">
-            <input type="hidden" name="secret" value="{{ secret_key }}">
-            <button type="submit" class="button">Forceer Overzicht</button>
-        </form>
+        <div class="header-bar">
+            <form action="{{ url_for('force_snapshot_route') }}" method="POST">
+                <input type="hidden" name="secret" value="{{ secret_key }}">
+                <button type="submit" class="button">Forceer Overzicht</button>
+            </form>
+            <h1>LIS Dashboard</h1>
+        </div>
 
-        <hr>
+        <div class="content-box">
 
-        <h2>Laatste LIS Overzicht</h2>
-        <p>Laatste update op: {{ snapshot.timestamp }}</p>
+            <h2>Laatste LIS Overzicht</h2>
+            <p style="color: #666; margin-top: -5px;">Laatste update op: {{ snapshot.timestamp }}</p>
 
-        {% if snapshot.content_data %}
-            <div class="snapshot-content">
-                
-                <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
-                
-                {% if snapshot.content_data.INKOMEND %}
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Schip</th>
-                                <th>Besteltijd</th>
-                                <th>ETA Saeftinghe</th>
-                                <th>Loods</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for schip in snapshot.content_data.INKOMEND %}
-                            <tr>
-                                <td>
-                                    {% if schip.GisLink %}
-                                        <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                    {% else %}
-                                        {{ schip.Schip }}
-                                    {% endif %}
-                                </td>
-                                <td>{{ schip.Besteltijd }}</td>
-                                <td>{{ schip.berekende_eta }}</td>
-                                <td>{{ schip.Loods }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                {% else %}
-                    <p>Geen schepen die aan de criteria voldoen.</p>
-                {% endif %}
+            {% if snapshot.content_data %}
+                <div class="snapshot-content">
+                    
+                    <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
+                    
+                    {% if snapshot.content_data.INKOMEND %}
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Schip</th>
+                                    <th>Besteltijd</th>
+                                    <th>ETA MPET</th>
+                                    <th>Loods</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for schip in snapshot.content_data.INKOMEND %}
+                                <tr>
+                                    <td>
+                                        {% if schip.GisLink %}
+                                            <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                        {% else %}
+                                            {{ schip.Schip }}
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ schip.Besteltijd }}</td>
+                                    <td>{{ schip.berekende_eta }}</td>
+                                    <td>{{ schip.Loods }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p>Geen schepen die aan de criteria voldoen.</p>
+                    {% endif %}
 
-                <h3>--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---</h3>
-                
-                {% if snapshot.content_data.UITGAAND %}
-                     <table>
-                        <thead>
-                            <tr>
-                                <th>Schip</th>
-                                <th>Besteltijd</th>
-                                <th>Loods</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for schip in snapshot.content_data.UITGAAND %}
-                            <tr>
-                                <td>
-                                    {% if schip.GisLink %}
-                                        <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                    {% else %}
-                                        {{ schip.Schip }}
-                                    {% endif %}
-                                </td>
-                                <td>{{ schip.Besteltijd }}</td>
-                                <td>{{ schip.Loods }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                {% else %}
-                    <p>Geen schepen die aan de criteria voldoen.</p>
-                {% endif %}
-            </div>
-        
-        {% elif snapshot.content %}
-            <div class="fallback-note">
-                <strong>Let op:</strong> Toont data in oude indeling. Druk op <strong>'Forceer Overzicht'</strong> hierboven om de nieuwe tabelweergave met hyperlinks te laden.
-            </div>
-            <pre>{{ snapshot.content }}</pre>
-
-        {% else %}
-            <p>Wachten op de eerste run...</p>
-        {% endif %}
-
-        <hr style="margin-top: 30px;">
-
-        <h2>Recente Wijzigingen (max 10)</h2>
-        {% if changes %}
-            {% for change in changes %}
-                <div class="change-item">
-                    <div class="change-header">
-                        [{{ change.timestamp }}] - {{ change.onderwerp }}
-                    </div>
-                    <pre>{{ change.content }}</pre>
+                    <h3>--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---</h3>
+                    
+                    {% if snapshot.content_data.UITGAAND %}
+                         <table>
+                            <thead>
+                                <tr>
+                                    <th>Schip</th>
+                                    <th>Besteltijd</th>
+                                    <th>Loods</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for schip in snapshot.content_data.UITGAAND %}
+                                <tr>
+                                    <td>
+                                        {% if schip.GisLink %}
+                                            <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                        {% else %}
+                                            {{ schip.Schip }}
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ schip.Besteltijd }}</td>
+                                    <td>{{ schip.Loods }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p>Geen schepen die aan de criteria voldoen.</p>
+                    {% endif %}
                 </div>
-            {% endfor %}
-        {% else %}
-            <p>Nog geen wijzigingen gedetecteerd.</p>
-        {% endif %}
+            
+            {% elif snapshot.content %}
+                <div class="fallback-note">
+                    <strong>Let op:</strong> Toont data in oude indeling. Druk op <strong>'Forceer Overzicht'</strong> hierboven om de nieuwe tabelweergave met hyperlinks te laden.
+                </div>
+                <pre>{{ snapshot.content }}</pre>
 
+            {% else %}
+                <p>Wachten op de eerste run...</p>
+            {% endif %}
+
+
+            <h2>Recente Wijzigingen (max 10)</h2>
+            {% if changes %}
+                {% for change in changes %}
+                    <div class="change-item">
+                        <div class="change-header">
+                            [{{ change.timestamp }}] - {{ change.onderwerp }}
+                        </div>
+                        <pre>{{ change.content }}</pre>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>Nog geen wijzigingen gedetecteerd.</p>
+            {% endif %}
+
+        </div>
     </div>
 
 </body>
