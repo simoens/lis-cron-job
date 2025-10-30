@@ -10,7 +10,7 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
 import time
-from urllib.parse import urljoin # <-- BELANGRIJKE IMPORT
+from urllib.parse import urljoin # <-- FIX 1: Import voor de links
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,6 +33,7 @@ def main_task():
         main()
         logging.info("--- Background task finished ---")
     except Exception as e:
+        # Log de volledige traceback bij een fout
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
 @app.route('/')
@@ -154,7 +155,7 @@ def login(session):
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
     try:
-        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx" # FIX 1: URL voor links
         response = session.get(base_page_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
@@ -186,13 +187,11 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- HIER WORDT DE GIS LINK GEZOCHT ---
-            # Haal 'GisLink' op uit 'C' kolom (index 2)
+            # --- FIX 1: HIER WORDT DE GIS LINK GEZOCHT ---
             if 2 < len(kolom_data):
                 gis_cel = kolom_data[2]
                 link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
                 if link_tag and link_tag.get('href'):
-                    # Maak de relatieve URL om tot een volledige URL
                     bestelling['GisLink'] = urljoin(base_page_url, link_tag['href'])
             # --- EINDE LINK BLOK ---
 
@@ -249,15 +248,15 @@ def filter_snapshot_schepen(bestellingen, session):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
+    # --- FIX 2: HIER ZIT DE CRASHFIX ---
     # Sorteer bestellingen op besteltijd (nieuwste eerst)
-    # --- HIER IS DE FIX ---
-    # We gebruiken 'x.get('Besteltijd') or '...''. Dit vangt 'None' en lege strings '' op.
+    # Gebruik 'or' om lege strings '' en None op te vangen.
     bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
 
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str: # Deze check vangt '' of None op
+            if not besteltijd_str: # Vangt '' en None op
                 continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
             
@@ -277,16 +276,14 @@ def filter_snapshot_schepen(bestellingen, session):
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError):
-            # Vangt eventuele parse-fouten op in de loop en gaat door
+            logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=True)
             continue
 
     # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
-    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
-    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
+    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
     
     return gefilterd
-
-# De functie format_snapshot_email() is verwijderd.
 
 def filter_dubbele_schepen(bestellingen):
     """Filtert dubbele schepen uit de lijst."""
@@ -300,8 +297,8 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                huidige_tijd = datetime.strptime(b.get("Besteltijd"), "%d/%m/%y %H:%M")
-                opgeslagen_tijd = datetime.strptime(unieke_schepen[schip_naam_gekuist].get("Besteltijd"), "%d/%m/%y %H:%M")
+                huidige_tijd = datetime.strptime(b.get("Besteltijd") or '01/01/70 00:00', "%d/%m/%y %H:%M")
+                opgeslagen_tijd = datetime.strptime(unieke_schepen[schip_naam_gekuist].get("Besteltijd") or '01/01/70 00:00', "%d/%m/%y %H:%M")
                 if huidige_tijd > opgeslagen_tijd:
                     unieke_schepen[schip_naam_gekuist] = b
             except (ValueError, TypeError):
@@ -326,13 +323,14 @@ def vergelijk_bestellingen(oude, nieuwe):
     nu = datetime.now()
     
     def moet_rapporteren(bestelling):
-        if not bestelling.get('Besteltijd', '').strip(): return False
+        besteltijd_str = bestelling.get('Besteltijd', '').strip()
+        if not besteltijd_str: return False
         
         rapporteer = True
         type_schip = bestelling.get('Type')
         
         try:
-            besteltijd = datetime.strptime(bestelling.get("Besteltijd"), "%d/%m/%y %H:%M")
+            besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
             if type_schip == 'I':
                 if not (nu - timedelta(hours=8) <= besteltijd <= nu + timedelta(hours=8)):
                     rapporteer = False
@@ -457,12 +455,12 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # FIX 1: Deze data bevat nu 'GisLink'
     
     with data_lock:
         app_state["latest_snapshot"] = {
             "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content_data": snapshot_data  # <-- We slaan de data structuur op
+            "content_data": snapshot_data  # FIX 1: We slaan de data structuur op
         }
         # Verwijder de oude 'content' sleutel als die nog bestaat
         app_state["latest_snapshot"].pop("content", None)
@@ -503,7 +501,7 @@ def main():
         
     # --- Save State for Next Run ---
     nieuwe_staat = {
-        "bestellingen": nieuwe_bestellingen,
+        "bestellingen": newe_bestellingen,
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
