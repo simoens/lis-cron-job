@@ -154,19 +154,24 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
+    logging.info("--- DEBUG: Running NEW haal_bestellingen_op (v3 with GisLink logging) ---") # Bewijs dat de nieuwe code draait
     try:
-        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx" # URL voor links
+        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         
-        if table is None: return []
+        if table is None: 
+            logging.warning("--- DEBUG: De bestellingentabel werd niet gevonden. ---")
+            return []
         
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20}
         bestellingen = []
+        log_GisLink_success = True # Om maar één keer te loggen
+        log_GisLink_fail = True
         
-        for row in table.find_all('tr')[1:]: # Sla header rij over
+        for row in table.find_all('tr')[1:]: 
             kolom_data = row.find_all('td')
             if not kolom_data: continue
             
@@ -192,13 +197,27 @@ def haal_bestellingen_op(session):
                 gis_cel = kolom_data[2]
                 link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
                 if link_tag and link_tag.get('href'):
-                    bestelling['GisLink'] = urljoin(base_page_url, link_tag['href'])
+                    gis_url = urljoin(base_page_url, link_tag['href'])
+                    bestelling['GisLink'] = gis_url
+                    if log_GisLink_success:
+                        logging.info(f"--- DEBUG: GIS LINK SUCCESS! Gevonden: {gis_url} ---")
+                        log_GisLink_success = False # Log dit maar één keer
+                else:
+                    if log_GisLink_fail:
+                        logging.warning(f"--- DEBUG: GIS link_tag NIET gevonden in gis_cel. Cell content: {str(gis_cel)} ---")
+                        log_GisLink_fail = False
+            else:
+                if log_GisLink_fail:
+                    logging.warning("--- DEBUG: Kolom 2 (GisLink) niet gevonden (len(kolom_data) <= 2) ---")
+                    log_GisLink_fail = False
             # --- EINDE LINK BLOK ---
 
             bestellingen.append(bestelling)
+            
+        logging.info(f"--- DEBUG: haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden. ---")
         return bestellingen
     except Exception as e:
-        logging.error(f"Error fetching orders: {e}")
+        logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
 def haal_pta_van_reisplan(session, reis_id):
@@ -222,7 +241,7 @@ def haal_pta_van_reisplan(session, reis_id):
                         laatste_pta_gevonden = match.group(0)
         
         if laatste_pta_gevonden:
-            logging.info(f"Last PTA found for ReisId {reis_id}: {laatste_pta_gevonden}")
+            # logging.info(f"Last PTA found for ReisId {reis_id}: {laatste_pta_gevonden}") # Te veel spam
             try:
                 dt_obj = datetime.strptime(laatste_pta_gevonden, '%d-%m %H:%M')
                 now = datetime.now()
@@ -234,7 +253,7 @@ def haal_pta_van_reisplan(session, reis_id):
                 logging.warning(f"Could not parse PTA format '{laatste_pta_gevonden}' for ReisId {reis_id}.")
                 return laatste_pta_gevonden
         
-        logging.warning(f"No row with a valid PTA for 'Saeftinghe - Zandvliet' found for ReisId {reis_id}")
+        # logging.warning(f"No row with a valid PTA for 'Saeftinghe - Zandvliet' found for ReisId {reis_id}")
         return None
     except Exception as e:
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
@@ -276,7 +295,7 @@ def filter_snapshot_schepen(bestellingen, session):
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError):
-            logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=True)
+            logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=False)
             continue
 
     # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
@@ -347,7 +366,7 @@ def vergelijk_bestellingen(oude, nieuwe):
         return rapporteer
 
     for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
-        n_best = nieuwe_dict[schip_naam]
+        n_best = nieuwe_dict[schip_naam] # HIER WAS EEN TYPEFOUT, nu 'nieuwe_dict'
         if moet_rapporteren(n_best):
             wijzigingen.append({
                 'Schip': n_best.get('Schip'), 
@@ -365,7 +384,7 @@ def vergelijk_bestellingen(oude, nieuwe):
             })
 
     for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
-        n_best = nieuwe_dict[schip_naam]
+        n_best = nieuwe_dict[schip_naam] # HIER WAS EEN TYPEFOUT, nu 'nieuwe_dict'
         o_best = oude_dict[schip_naam]
         
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
