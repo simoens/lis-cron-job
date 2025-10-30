@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LIS Scraper Overzicht</title>
+    <title>LIS Overzicht</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -14,6 +14,10 @@
         h1, h2, h3 {
             border-bottom: 2px solid #eee;
             padding-bottom: 5px;
+        }
+        h2 {
+            font-size: 1.5em;
+            margin-top: 25px;
         }
         h3 {
             margin-top: 30px;
@@ -90,26 +94,28 @@
             border: 1px solid #ffe58f;
             padding: 10px;
             border-radius: 4px;
+            margin-top: 15px;
         }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h1>LIS Scraper Overzicht</h1>
+        <h1>LIS Overzicht Dashboard</h1>
         
         <form action="{{ url_for('force_snapshot_route') }}" method="POST" style="margin-bottom: 20px;">
             <input type="hidden" name="secret" value="{{ secret_key }}">
-            <button type="submit" class="button">Forceer Nieuw Overzicht</button>
+            <button type="submit" class="button">Forceer Overzicht</button>
         </form>
 
         <hr>
 
-        <h2>Laatste Overzicht</h2>
-        <p>Gegenereerd op: {{ snapshot.timestamp }}</p>
+        <h2>Laatste LIS Overzicht</h2>
+        <p>Laatste update op: {{ snapshot.timestamp }}</p>
 
         {% if snapshot.content_data %}
             <div class="snapshot-content">
+                
                 <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
                 
                 {% if snapshot.content_data.INKOMEND %}
@@ -177,7 +183,7 @@
         
         {% elif snapshot.content %}
             <div class="fallback-note">
-                <strong>Let op:</strong> Toont data in oude indeling. Druk op <strong>'Forceer Nieuw Overzicht'</strong> hierboven om de nieuwe tabelweergave met hyperlinks te laden.
+                <strong>Let op:</strong> Toont data in oude indeling. Druk op <strong>'Forceer Overzicht'</strong> hierboven om de nieuwe tabelweergave met hyperlinks te laden.
             </div>
             <pre>{{ snapshot.content }}</pre>
 
@@ -187,7 +193,7 @@
 
         <hr style="margin-top: 30px;">
 
-        <h2>Wijzigingsgeschiedenis (Laatste 10)</h2>
+        <h2>Recente Wijzigingen (max 10)</h2>
         {% if changes %}
             {% for change in changes %}
                 <div class="change-item">
