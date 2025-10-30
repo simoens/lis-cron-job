@@ -78,6 +78,7 @@ def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
     secret = request.args.get('secret')
     if secret != os.environ.get('SECRET_KEY'):
+        logging.warning("Failed attempt to call /force-snapshot with an invalid secret key.")
         abort(403)
     
     logging.info("================== Manual Background Run Triggered via Button ==================")
@@ -292,8 +293,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if besteltijd_naive.year == 1970:
                 continue
 
-            # --- HIER IS DE FIX ---
-            # Maak de 'besteltijd' bewust van de Brusselse tijdzone
+            # --- HIER IS DE TIJDZONE-FIX ---
             besteltijd = brussels_tz.localize(besteltijd_naive)
             # --- EINDE FIX ---
             
@@ -315,7 +315,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     gefilterd["INKOMEND"].append(b)
                     
         except (ValueError, TypeError) as e:
-            # Nu loggen we de *echte* fout
+            # Vangt de 'aware vs naive' TypeError op
             logging.warning(f"Fout bij verwerken van '{besteltijd_str_raw}' (Fout: {e}). Schip wordt overgeslagen.", exc_info=False)
             continue
 
@@ -336,11 +336,9 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                # --- AANPASSING 5 ---
                 # Gebruik de veilige parser
                 huidige_tijd = parse_besteltijd(b.get("Besteltijd"))
                 opgeslagen_tijd = parse_besteltijd(unieke_schepen[schip_naam_gekuist].get("Besteltijd"))
-                # --- EINDE AANPASSING ---
                 
                 if huidige_tijd > opgeslagen_tijd:
                     unieke_schepen[schip_naam_gekuist] = b
@@ -351,61 +349,99 @@ def filter_dubbele_schepen(bestellingen):
             
     return list(unieke_schepen.values())
 
-def filter_snapshot_schepen(bestellingen, session, nu): 
-    """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
-    gefilterd = {"INKOMEND": [], "UITGAAND": []}
+# --- DEZE FUNCTIE WAS VERDWENEN ---
+def vergelijk_bestellingen(oude, nieuwe):
+    """Vergelijkt oude en nieuwe bestellijsten."""
     
-    brussels_tz = pytz.timezone('Europe/Brussels') # We hebben de timezone nodig
+    oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
+            for b in filter_dubbele_schepen(oude) if b.get('Schip')}
+    nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
+                   for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
     
-    grens_uit_toekomst = nu + timedelta(hours=16)
-    grens_in_verleden = nu - timedelta(hours=8)
-    grens_in_toekomst = nu + timedelta(hours=8)
-    
-    bestellingen.sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')), reverse=True)
+    oude_schepen_namen = set(oude_dict.keys())
+    nieuwe_schepen_namen = set(nieuwe_dict.keys())
 
-    for b in bestellingen:
+    wijzigingen = []
+    nu_brussels = datetime.now(pytz.timezone('Europe/Brussels')) # Gebruik Brusselse tijd
+    brussels_tz = pytz.timezone('Europe/Brussels')
+    
+    def moet_rapporteren(bestelling):
+        besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
+        
+        besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
+        if besteltijd_naive.year == 1970: 
+             return False
+        
+        # --- HIER IS DE TIJDZONE-FIX ---
+        besteltijd = brussels_tz.localize(besteltijd_naive)
+        
+        rapporteer = True
+        type_schip = bestelling.get('Type')
+        
         try:
-            entry_point = b.get('Entry Point', '').lower()
-            if 'zeebrugge' in entry_point:
-                continue 
-            
-            besteltijd_str_raw = b.get("Besteltijd")
-            besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
-            
-            if besteltijd_naive.year == 1970:
-                continue
-
-            # --- HIER IS DE FIX ---
-            # Maak de 'besteltijd' bewust van de Brusselse tijdzone
-            besteltijd = brussels_tz.localize(besteltijd_naive)
-            # --- EINDE FIX ---
-            
-            if b.get("Type") == "U": 
-                if nu <= besteltijd <= grens_uit_toekomst:
-                    gefilterd["UITGAAND"].append(b)
-                    
-            elif b.get("Type") == "I": 
-                if grens_in_verleden <= besteltijd <= grens_in_toekomst:
-                    pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
-                    b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
-                    if b['berekende_eta'] == 'N/A':
-                        eta_dt = None
-                        if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
-                        elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
-                        if eta_dt:
-                            b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
-                            
-                    gefilterd["INKOMEND"].append(b)
-                    
+            if type_schip == 'I':
+                if not (nu_brussels - timedelta(hours=8) <= besteltijd <= nu_brussels + timedelta(hours=8)):
+                    rapporteer = False
+            elif type_schip == 'U':
+                if not (nu_brussels <= besteltijd <= nu_brussels + timedelta(hours=16)):
+                    rapporteer = False
         except (ValueError, TypeError) as e:
-            # Nu loggen we de *echte* fout
-            logging.warning(f"Fout bij verwerken van '{besteltijd_str_raw}' (Fout: {e}). Schip wordt overgeslagen.", exc_info=False)
+            logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
+            return False
+
+        if 'zeebrugge' in bestelling.get('Entry Point', '').lower():
+            rapporteer = False
+            
+        return rapporteer
+
+    # --- CASE 1: NIEUWE SCHEPEN ---
+    for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
+        n_best = nieuwe_dict[schip_naam] 
+        if moet_rapporteren(n_best):
+            wijzigingen.append({
+                'Schip': n_best.get('Schip'), 
+                'status': 'NIEUW',
+                'details': n_best 
+            })
+
+    # --- CASE 2: VERWIJDERDE SCHEPEN ---
+    for schip_naam in (oude_schepen_namen - nieuwe_schepen_namen):
+        o_best = oude_dict[schip_naam]
+        if moet_rapporteren(o_best): 
+            wijzigingen.append({
+                'Schip': o_best.get('Schip'),
+                'status': 'VERWIJDERD',
+                'details': o_best
+            })
+
+    # --- CASE 3: GEWIJZIGDE SCHEPEN ---
+    for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
+        n_best = nieuwe_dict[schip_naam] 
+        o_best = oude_dict[schip_naam]
+        
+        if n_best.get('Type') != o_best.get('Type'):
             continue
 
-    gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
-    gefilterd["UITGAAND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
-    
-    return gefilterd
+        diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
+        
+        if diff:
+            gewijzigde_sleutels = set(diff.keys())
+            
+            if n_best.get('Type') == 'I' and gewijzigde_sleutels == {'ETA/ETD'}:
+                logging.info(f"Onderdrukt: Alleen ETA/ETD gewijzigd voor inkomend schip {schip_naam}")
+                continue 
+
+            relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
+            if relevante.intersection(gewijzigde_sleutels): 
+                if moet_rapporteren(n_best) or moet_rapporteren(o_best):
+                    wijzigingen.append({
+                        'Schip': n_best.get('Schip'),
+                        'status': 'GEWIJZIGD',
+                        'wijzigingen': diff
+                    })
+            
+    return wijzigingen
+# --- EINDE VERDWENEN FUNCTIE ---
 
 
 def format_wijzigingen_email(wijzigingen):
@@ -471,7 +507,7 @@ def main():
         return
     
     nieuwe_bestellingen = haal_bestellingen_op(session) 
-    if not nieuwe_bestellingen:
+    if not newe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
 
