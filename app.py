@@ -254,16 +254,14 @@ def haal_pta_van_reisplan(session, reis_id):
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
         return None
 
-def filter_snapshot_schepen(bestellingen, session, nu): # <-- 'nu' HIER TOEGEVOEGD
+def filter_snapshot_schepen(bestellingen, session, nu):
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
-    
-    # 'nu = datetime.now()' is HIER VERWIJDERD
-    
+
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
-    
+
     # Sorteer bestellingen op besteltijd (nieuwste eerst)
     bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
 
@@ -273,18 +271,18 @@ def filter_snapshot_schepen(bestellingen, session, nu): # <-- 'nu' HIER TOEGEVOE
             entry_point = b.get('Entry Point', '').lower()
             if 'zeebrugge' in entry_point:
                 continue 
-            
+
             besteltijd_str = b.get("Besteltijd")
             if not besteltijd_str: 
                 continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-            
+
             if b.get("Type") == "U": # Uitgaand
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
-                    
+
             elif b.get("Type") == "I": # Inkomend
-                if grens_in_verleden <= besteltijd <= grens_in_toekomst:
+                if grens_in_verleden <= bestijd <= grens_in_toekomst:
                     # Bepaal de ETA MPET
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
@@ -294,26 +292,11 @@ def filter_snapshot_schepen(bestellingen, session, nu): # <-- 'nu' HIER TOEGEVOE
                         elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
-                    
-                    # Filter schepen als hun ETA in het verleden ligt
-                    if b.get('berekende_eta') and b['berekende_eta'] != 'N/A':
-                        try:
-                            # Parse de ETA string naar een datumobject
-                            eta_datetime = datetime.strptime(b['berekende_eta'], "%d/%m/%y %H:%M")
-                            
-                            # Maak het 'naive' eta-object 'aware' van de Brusselse timezone
-                            # zodat de vergelijking met 'nu' (die al aware is) correct werkt.
-                            eta_datetime_aware = pytz.timezone('Europe/Brussels').localize(eta_datetime)
-                            
-                            if eta_datetime_aware < nu: # 'nu' is nu de correcte Brusselse tijd
-                                logging.info(f"Filter: {b.get('Schip')} wordt overgeslagen, ETA MPET ({b['berekende_eta']}) ligt in het verleden.")
-                                continue # Sla dit schip over
-                        except (ValueError, TypeError):
-                            logging.warning(f"Kon ETA '{b['berekende_eta']}' niet parsen voor {b.get('Schip')} bij verleden-check.")
-                            pass 
-                            
+
+                    # De "ETA in het verleden"-filter is hier verwijderd
+
                     gefilterd["INKOMEND"].append(b)
-                    
+
         except (ValueError, TypeError):
             logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=False)
             continue
@@ -321,7 +304,7 @@ def filter_snapshot_schepen(bestellingen, session, nu): # <-- 'nu' HIER TOEGEVOE
     # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
     gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
     gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
-    
+
     return gefilterd
 
 def filter_dubbele_schepen(bestellingen):
