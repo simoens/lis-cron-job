@@ -41,10 +41,6 @@ def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
     vorige_staat = load_state_from_jsonbin()
     
-    # --- START AANPASSING ---
-    # We laden de 'change_history' data nu hier, zodat we het kunnen verwerken
-    # en doorgeven aan de template.
-    
     recent_changes_list = []
     if vorige_staat:
         with data_lock:
@@ -61,17 +57,14 @@ def home():
             app_state["change_history"].clear()
             app_state["change_history"].extend(recent_changes_list)
     
-    # Maak één grote string van alle 'content' velden in de geschiedenis
-    # Dit is een simpele manier om in de template te checken of een schip erin voorkomt
-    all_change_text = " ".join([change.get('content', '') for change in recent_changes_list])
-    # --- EINDE AANPASSING ---
+    # De 'all_change_text' logica is hier verwijderd.
     
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
                                 changes=list(app_state["change_history"]),
-                                secret_key=os.environ.get('SECRET_KEY'),
-                                all_change_text=all_change_text) # <-- Geef de nieuwe data door
+                                secret_key=os.environ.get('SECRET_KEY'))
+                                # 'all_change_text' wordt niet meer doorgegeven
 
 @app.route('/trigger-run')
 def trigger_run():
