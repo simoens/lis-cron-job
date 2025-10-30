@@ -273,28 +273,6 @@ def filter_snapshot_schepen(bestellingen, session):
             continue
     return gefilterd
 
-def format_snapshot_email(snapshot_data):
-    """Formatteert de gefilterde snapshot data naar een plain text string."""
-    body = "--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---\n"
-    if snapshot_data.get('INKOMEND'):
-        snapshot_data['INKOMEND'].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
-        for schip in snapshot_data['INKOMEND']:
-            naam = schip.get('Schip', 'N/A').ljust(30)
-            besteltijd_str = schip.get('Besteltijd', 'N/A')
-            loods = schip.get('Loods', 'N/A')
-            eta_str = schip.get('berekende_eta', 'N/A')
-            body += f"- {naam} | Besteltijd: {besteltijd_str.ljust(15)} | ETA: {eta_str.ljust(15)} | Loods: {loods}\n"
-    else:
-        body += "Geen schepen die aan de criteria voldoen.\n"
-    
-    body += "\n--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---\n"
-    if snapshot_data.get('UITGAAND'):
-        snapshot_data['UITGAAND'].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
-        for schip in snapshot_data['UITGAAND']:
-            body += f"- {schip.get('Schip', 'N/A').ljust(30)} | Besteltijd: {schip.get('Besteltijd', 'N/A')} | Loods: {schip.get('Loods', 'N/A')}\n"
-    else:
-        body += "Geen schepen die aan de criteria voldoen.\n"
-    return body
 
 def filter_dubbele_schepen(bestellingen):
     """Filtert dubbele schepen uit de lijst."""
@@ -467,12 +445,12 @@ def main():
     nu_brussels = datetime.now(brussels_tz)
     
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
-    snapshot_inhoud = format_snapshot_email(snapshot_data)
+    # De 'format_snapshot_email' functie is verwijderd, we slaan de data direct op.
     
     with data_lock:
         app_state["latest_snapshot"] = {
             "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content": snapshot_inhoud
+            "content_data": snapshot_data  # <-- BELANGRIJKE WIJZIGING
         }
     
     # --- Change Detection ---
