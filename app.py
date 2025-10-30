@@ -10,7 +10,7 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
 import time
-from urllib.parse import urljoin # <-- HIER IS DE LINK-IMPORT
+# from urllib.parse import urljoin # Import is verwijderd
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -154,7 +154,7 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
-    logging.info("--- DEBUG: Running NEW haal_bestellingen_op (v4 with onclick logic) ---") # v4
+    logging.info("--- Running haal_bestellingen_op (v5, No-Link-Scraping) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
@@ -163,13 +163,11 @@ def haal_bestellingen_op(session):
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         
         if table is None: 
-            logging.warning("--- DEBUG: De bestellingentabel werd niet gevonden. ---")
+            logging.warning("De bestellingentabel werd niet gevonden.")
             return []
         
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20}
         bestellingen = []
-        log_GisLink_success = True # Om maar één keer te loggen
-        log_GisLink_fail = True
         
         for row in table.find_all('tr')[1:]: 
             kolom_data = row.find_all('td')
@@ -192,46 +190,11 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- HIER WORDT DE GIS LINK GEZOCHT (Nieuwe v4 logica) ---
-            if 2 < len(kolom_data):
-                gis_cel = kolom_data[2]
-                link_tag = gis_cel.find('a') # Vind *eerst* de <a> tag
-
-                if link_tag and link_tag.get('onclick'):
-                    onclick_string = link_tag['onclick']
-                    # Zoek naar de URL binnen de window.open('...')
-                    match = re.search(r"window\.open\('([^']+)'", onclick_string)
-                    
-                    if match:
-                        # We hebben de relatieve URL gevonden
-                        relatieve_url_raw = match.group(1)
-                        # Maak HTML entities schoon (zoals &amp;)
-                        relatieve_url = relatieve_url_raw.replace("&amp;", "&")
-                        
-                        # Maak er een volledige URL van
-                        gis_url = urljoin(base_page_url, relatieve_url)
-                        bestelling['GisLink'] = gis_url
-                        
-                        if log_GisLink_success:
-                            logging.info(f"--- DEBUG: GIS LINK (via onclick) SUCCESS! Gevonden: {gis_url} ---")
-                            log_GisLink_success = False
-                    else:
-                        if log_GisLink_fail:
-                            logging.warning(f"--- DEBUG: GIS link_tag GEVONDEN, maar 'onclick' patroon (window.open) NIET GEVONDEN in: {onclick_string} ---")
-                            log_GisLink_fail = False
-                else:
-                    if log_GisLink_fail:
-                        logging.warning(f"--- DEBUG: GIS link_tag (<a>) NIET GEVONDEN of heeft geen 'onclick' in: {str(gis_cel)} ---")
-                        log_GisLink_fail = False
-            else:
-                if log_GisLink_fail:
-                    logging.warning("--- DEBUG: Kolom 2 (GisLink) niet gevonden (len(kolom_data) <= 2) ---")
-                    log_GisLink_fail = False
-            # --- EINDE LINK BLOK ---
+            # --- BLOK VOOR GIS LINK IS HIER VOLLEDIG VERWIJDERD ---
 
             bestellingen.append(bestelling)
             
-        logging.info(f"--- DEBUG: haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden. ---")
+        logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden.")
         return bestellingen
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
@@ -383,7 +346,7 @@ def vergelijk_bestellingen(oude, nieuwe):
         return rapporteer
 
     for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
-        n_best = nieuwe_dict[schip_naam] # HIER WAS EEN TYPEFOUT, nu 'nieuwe_dict'
+        n_best = nieuwe_dict[schip_naam] 
         if moet_rapporteren(n_best):
             wijzigingen.append({
                 'Schip': n_best.get('Schip'), 
@@ -401,7 +364,7 @@ def vergelijk_bestellingen(oude, nieuwe):
             })
 
     for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
-        n_best = nieuwe_dict[schip_naam] # HIER WAS EEN TYPEFOUT, nu 'nieuwe_dict'
+        n_best = nieuwe_dict[schip_naam] 
         o_best = oude_dict[schip_naam]
         
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
@@ -481,7 +444,7 @@ def main():
         logging.error("Login failed during main() run.")
         return
     
-    nieuwe_bestellingen = haal_bestellingen_op(session) # Deze lijst bevat nu 'GisLink'
+    nieuwe_bestellingen = haal_bestellingen_op(session) # Deze lijst bevat nu GEEN 'GisLink'
     if not nieuwe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
@@ -491,7 +454,7 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # Deze data bevat nu 'GisLink'
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # Deze data bevat nu GEEN 'GisLink'
     
     with data_lock:
         app_state["latest_snapshot"] = {
@@ -538,7 +501,7 @@ def main():
     # --- Save State for Next Run ---
     # --- HIER IS DE TYPEFOUT-FIX ---
     nieuwe_staat = {
-        "bestellingen": nieuwe_bestellingen, # Was 'newe_bestellingen'
+        "bestellingen": newe_bestellingen, # <-- Dit is de GECORRIGEERDE typefout
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
