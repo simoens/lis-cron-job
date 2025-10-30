@@ -257,7 +257,7 @@ def haal_pta_van_reisplan(session, reis_id):
 def filter_snapshot_schepen(bestellingen, session):
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
-    nu = datetime.now()
+    nu = datetime.now() # We hebben de huidige tijd nodig om te vergelijken
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
@@ -267,34 +267,51 @@ def filter_snapshot_schepen(bestellingen, session):
 
     for b in bestellingen:
         try:
-            # --- START AANPASSING ---
-            # Haal Entry Point op en controleer op "Zeebrugge"
-            # De kolom 'Exit Point' wordt niet gescraped, dus we checken 'Entry Point'
+            # Filter "Zeebrugge"
             entry_point = b.get('Entry Point', '').lower()
             if 'zeebrugge' in entry_point:
-                continue # Sla dit schip volledig over
-            # --- EINDE AANPASSING ---
-
+                continue 
+            
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str: # Vangt '' en None op
+            if not besteltijd_str: 
                 continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
             
             if b.get("Type") == "U": # Uitgaand
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
+                    
             elif b.get("Type") == "I": # Inkomend
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
+                    # Bepaal de ETA MPET
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
                     if b['berekende_eta'] == 'N/A':
-                        # 'entry_point' is hierboven al gedefinieerd
                         eta_dt = None
                         if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
                         elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                    
+                    # --- START AANPASSING ---
+                    # Filter schepen als hun ETA in het verleden ligt
+                    if b.get('berekende_eta') and b['berekende_eta'] != 'N/A':
+                        try:
+                            # Parse de ETA string naar een datumobject
+                            eta_datetime = datetime.strptime(b['berekende_eta'], "%d/%m/%y %H:%M")
+                            
+                            # Vergelijk met de huidige tijd 'nu'
+                            if eta_datetime < nu:
+                                logging.info(f"Filter: {b.get('Schip')} wordt overgeslagen, ETA MPET ({b['berekende_eta']}) ligt in het verleden.")
+                                continue # Sla dit schip over
+                        except (ValueError, TypeError):
+                            # Kan de datum niet parsen, negeer de check voor dit schip
+                            logging.warning(f"Kon ETA '{b['berekende_eta']}' niet parsen voor {b.get('Schip')} bij verleden-check.")
+                            pass 
+                    # --- EINDE AANPASSING ---
+                            
                     gefilterd["INKOMEND"].append(b)
+                    
         except (ValueError, TypeError):
             logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=False)
             continue
