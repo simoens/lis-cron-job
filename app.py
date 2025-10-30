@@ -254,10 +254,12 @@ def haal_pta_van_reisplan(session, reis_id):
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
         return None
 
-def filter_snapshot_schepen(bestellingen, session):
+def filter_snapshot_schepen(bestellingen, session, nu): # <-- 'nu' HIER TOEGEVOEGD
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
-    nu = datetime.now() # We hebben de huidige tijd nodig om te vergelijken
+    
+    # 'nu = datetime.now()' is HIER VERWIJDERD
+    
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
@@ -293,22 +295,22 @@ def filter_snapshot_schepen(bestellingen, session):
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     
-                    # --- START AANPASSING ---
                     # Filter schepen als hun ETA in het verleden ligt
                     if b.get('berekende_eta') and b['berekende_eta'] != 'N/A':
                         try:
                             # Parse de ETA string naar een datumobject
                             eta_datetime = datetime.strptime(b['berekende_eta'], "%d/%m/%y %H:%M")
                             
-                            # Vergelijk met de huidige tijd 'nu'
-                            if eta_datetime < nu:
+                            # Maak het 'naive' eta-object 'aware' van de Brusselse timezone
+                            # zodat de vergelijking met 'nu' (die al aware is) correct werkt.
+                            eta_datetime_aware = pytz.timezone('Europe/Brussels').localize(eta_datetime)
+                            
+                            if eta_datetime_aware < nu: # 'nu' is nu de correcte Brusselse tijd
                                 logging.info(f"Filter: {b.get('Schip')} wordt overgeslagen, ETA MPET ({b['berekende_eta']}) ligt in het verleden.")
                                 continue # Sla dit schip over
                         except (ValueError, TypeError):
-                            # Kan de datum niet parsen, negeer de check voor dit schip
                             logging.warning(f"Kon ETA '{b['berekende_eta']}' niet parsen voor {b.get('Schip')} bij verleden-check.")
                             pass 
-                    # --- EINDE AANPASSING ---
                             
                     gefilterd["INKOMEND"].append(b)
                     
