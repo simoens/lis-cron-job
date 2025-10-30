@@ -21,7 +21,7 @@ app_state = {
 }
 data_lock = threading.Lock() 
 
-# --- FLASK APPLICATIE --
+# --- FLASK APPLICATIE ---
 app = Flask(__name__)
 
 # --- HELPER FUNCTIE VOOR ACHTERGROND TAKEN ---
@@ -76,7 +76,7 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    secret = request.form.get('secret')
+    secret = request.args.get('secret')
     if secret != os.environ.get('SECRET_KEY'):
         abort(403)
     
@@ -128,12 +128,26 @@ def save_state_to_jsonbin(state):
     except Exception as e:
         logging.error(f"Error saving state to jsonbin.io: {e}")
 
-# --- HELPER: DATUM SCHOONMAKEN ---
-def clean_date_string(date_str):
-    """Vervangt onzichtbare spaties (U+00A0) door gewone spaties."""
-    if not date_str:
-        return None
-    return re.sub(r'\s+', ' ', date_str.strip())
+# --- NIEUWE HELPER: ROBUUSTE DATUM PARSER ---
+def parse_besteltijd(besteltijd_str):
+    """Probeert een besteltijd-string te parsen. 
+    Geeft een geldig datetime-object terug, of epoch (1970) bij een fout."""
+    DEFAULT_TIME = datetime(1970, 1, 1) # Standaard 'vroegste' tijd
+    
+    if not besteltijd_str:
+        return DEFAULT_TIME
+        
+    try:
+        # 1. Maak de string schoon (vervang U+00A0, etc. met een gewone spatie)
+        cleaned_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
+        # 2. Probeer het te parsen
+        return datetime.strptime(cleaned_str, "%d/%m/%y %H:%M")
+    except ValueError:
+        # 3. Bij een fout (bv. 'Sluisplanning'), geef de default tijd terug
+        logging.warning(f"Kon besteltijd '{besteltijd_str}' niet parsen (bv. 'Sluisplanning'). Wordt genegeerd in sortering.")
+        return DEFAULT_TIME
+# --- EINDE NIEUWE HELPER ---
+
 
 # --- SCRAPER FUNCTIES ---
 def login(session):
@@ -171,7 +185,7 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
-    logging.info("--- Running haal_bestellingen_op (v6, No-Link, Whitespace-Fix) ---")
+    logging.info("--- Running haal_bestellingen_op (v7, Sluisplanning-Fix) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
@@ -236,7 +250,8 @@ def haal_pta_van_reisplan(session, reis_id):
         
         if laatste_pta_gevonden:
             try:
-                pta_schoon = clean_date_string(laatste_pta_gevonden) # FIX
+                # Maak de string schoon (vervang U+00A0)
+                pta_schoon = re.sub(r'\s+', ' ', laatste_pta_gevonden.strip())
                 dt_obj = datetime.strptime(pta_schoon, '%d-%m %H:%M')
                 
                 now = datetime.now()
@@ -261,8 +276,9 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
-    # Sorteer bestellingen op besteltijd (nieuwste eerst)
-    bestellingen.sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True) # FIX
+    # --- AANPASSING 1 ---
+    # Sorteer veilig met de nieuwe helper-functie
+    bestellingen.sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')), reverse=True)
 
     for b in bestellingen:
         try:
@@ -270,12 +286,15 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if 'zeebrugge' in entry_point:
                 continue 
             
+            # --- AANPASSING 2 ---
+            # Gebruik de helper-functie om de datum te parsen
             besteltijd_str_raw = b.get("Besteltijd")
-            besteltijd_str = clean_date_string(besteltijd_str_raw) # FIX
-            if not besteltijd_str: 
-                continue
+            besteltijd = parse_besteltijd(besteltijd_str_raw)
             
-            besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
+            # Als de tijd 1970 is, was het ongeldige data (bv. 'Sluisplanning')
+            if besteltijd.year == 1970:
+                continue
+            # --- EINDE AANPASSING ---
             
             if b.get("Type") == "U": 
                 if nu <= besteltijd <= grens_uit_toekomst:
@@ -297,12 +316,14 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     gefilterd["INKOMEND"].append(b)
                     
         except (ValueError, TypeError):
-            logging.warning(f"Kon besteltijd '{besteltijd_str_raw}' niet parsen. Schip wordt overgeslagen.", exc_info=False)
+            # Deze 'except' is nu een extra vangnet
+            logging.warning(f"Onverwachte fout bij parsen van '{besteltijd_str_raw}'. Schip wordt overgeslagen.", exc_info=False)
             continue
 
-    # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
-    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M")) # FIX
-    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M")) # FIX
+    # --- AANPASSING 3 & 4 ---
+    # Sorteer de resultaten ook veilig
+    gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
+    gefilterd["UITGAAND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     
     return gefilterd
 
@@ -318,11 +339,11 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                tijd_str_huidig = clean_date_string(b.get("Besteltijd")) or '01/01/70 00:00' # FIX
-                tijd_str_opgeslagen = clean_date_string(unieke_schepen[schip_naam_gekuist].get("Besteltijd")) or '01/01/70 00:00' # FIX
-                
-                huidige_tijd = datetime.strptime(tijd_str_huidig, "%d/%m/%y %H:%M")
-                opgeslagen_tijd = datetime.strptime(tijd_str_opgeslagen, "%d/%m/%y %H:%M")
+                # --- AANPASSING 5 ---
+                # Gebruik de veilige parser
+                huidige_tijd = parse_besteltijd(b.get("Besteltijd"))
+                opgeslagen_tijd = parse_besteltijd(unieke_schepen[schip_naam_gekuist].get("Besteltijd"))
+                # --- EINDE AANPASSING ---
                 
                 if huidige_tijd > opgeslagen_tijd:
                     unieke_schepen[schip_naam_gekuist] = b
@@ -345,23 +366,28 @@ def vergelijk_bestellingen(oude, nieuwe):
     nieuwe_schepen_namen = set(nieuwe_dict.keys())
 
     wijzigingen = []
-    nu = datetime.now() # UTC tijd van de server (OK voor 'moet_rapporteren')
+    nu_utc = datetime.now() # Server tijd is UTC
     
     def moet_rapporteren(bestelling):
         besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
-        besteltijd_str = clean_date_string(besteltijd_str_raw) # FIX
-        if not besteltijd_str: return False
+        
+        # --- AANPASSING 6 ---
+        # Gebruik de veilige parser
+        besteltijd = parse_besteltijd(besteltijd_str_raw)
+        if besteltijd.year == 1970: # Was ongeldige data
+             return False
+        # --- EINDE AANPASSING ---
         
         rapporteer = True
         type_schip = bestelling.get('Type')
         
         try:
-            besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
+            # 'besteltijd' is nu al een datetime object
             if type_schip == 'I':
-                if not (nu - timedelta(hours=8) <= besteltijd <= nu + timedelta(hours=8)):
+                if not (nu_utc - timedelta(hours=8) <= besteltijd <= nu_utc + timedelta(hours=8)):
                     rapporteer = False
             elif type_schip == 'U':
-                if not (nu <= besteltijd <= nu + timedelta(hours=16)):
+                if not (nu_utc <= besteltijd <= nu_utc + timedelta(hours=16)):
                     rapporteer = False
         except (ValueError, TypeError) as e:
             logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
