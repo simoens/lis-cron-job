@@ -88,6 +88,8 @@
             border: 1px solid #ddd;
             padding: 10px;
             text-align: left;
+            /* Voeg transitie toe voor soepele kleurverandering */
+            transition: background-color 0.3s ease;
         }
         th {
             background-color: #f2f2f2;
@@ -104,10 +106,23 @@
             text-decoration: underline;
         }
         
-        /* --- NIEUWE CLASS VOOR GROENE ACHTERGROND --- */
+        /* Groene achtergrond voor toegewezen loods */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
-            background-color: #dff0d8; /* Een subtiel lichtgroen */
-            font-weight: 500; /* Maak de tekst iets dikker */
+            background-color: #dff0d8; /* Lichtgroen */
+            font-weight: 500; 
+        }
+        
+        /* --- AANGEPASTE STIJL VOOR 'UNSEEN' --- */
+        /* Dit is de opvallende 'unseen' stijl */
+        tr.unseen-change, tr.unseen-change:nth-child(even) {
+            background-color: #fffbe6; /* Opvallend lichtgeel */
+            font-weight: bold;
+        }
+        /* Zorgt dat groen en geel goed combineren */
+        tr.pilot-assigned.unseen-change, 
+        tr.pilot-assigned.unseen-change:nth-child(even) {
+            background-color: #e8f5e9; /* Iets geler groen */
+            font-weight: bold;
         }
         
         /* Wijzigingen */
@@ -177,8 +192,20 @@
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
-                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>
+                                
+                                {% set clean_name = schip.Schip.replace('(d)', '').strip() %}
+                                {% set row_classes = [] %}
+                                {% set js_event = '' %}
+                                
+                                {% if schip.Loods == 'Loods werd toegewezen' %}{% set _ = row_classes.append('pilot-assigned') %}{% endif %}
+                                
+                                {% if clean_name in all_change_text %}
+                                    {% set _ = row_classes.append('unseen-change') %}
+                                    {% set js_event = 'onmouseover="this.classList.remove(\'unseen-change\')"' %}
+                                {% endif %}
+                                
+                                <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
+                                <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
                                         {% else %}
@@ -209,8 +236,20 @@
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
-                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>
+                                
+                                {% set clean_name = schip.Schip.replace('(d)', '').strip() %}
+                                {% set row_classes = [] %}
+                                {% set js_event = '' %}
+                                
+                                {% if schip.Loods == 'Loods werd toegewezen' %}{% set _ = row_classes.append('pilot-assigned') %}{% endif %}
+                                
+                                {% if clean_name in all_change_text %}
+                                    {% set _ = row_classes.append('unseen-change') %}
+                                    {% set js_event = 'onmouseover="this.classList.remove(\'unseen-change\')"' %}
+                                {% endif %}
+                                
+                                <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
+                                <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
                                         {% else %}
