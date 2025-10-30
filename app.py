@@ -4,23 +4,23 @@ import logging
 from datetime import datetime, timedelta
 import re
 import os
-import json # smtplib en email.mime.text zijn verwijderd
+import json 
 from collections import deque
 import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin # <-- BELANGRIJKE IMPORT
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
 app_state = {
-    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content": "Wachten op de eerste run..."},
-    "change_history": deque(maxlen=10) # Slaat de laatste 10 wijzigingen op.
+    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": []}}, # Gebruik content_data
+    "change_history": deque(maxlen=10)
 }
-data_lock = threading.Lock() # Lock voor thread-safe toegang tot app_state.
+data_lock = threading.Lock() 
 
 # --- FLASK APPLICATIE ---
 app = Flask(__name__)
@@ -33,8 +33,7 @@ def main_task():
         main()
         logging.info("--- Background task finished ---")
     except Exception as e:
-        # Vang alle fouten op die in de thread gebeuren
-        logging.critical(f"FATAL ERROR in background thread: {e}")
+        logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
 @app.route('/')
 def home():
@@ -42,8 +41,17 @@ def home():
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat:
         with data_lock:
-            # Update de globale state met data geladen van jsonbin.io
-            app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
+            # We zoeken naar de NIEUWE 'content_data'. 
+            # Als die niet bestaat, pakken we de OUDE 'content' als fallback.
+            if "web_snapshot" in vorige_staat:
+                if "content_data" in vorige_staat["web_snapshot"]:
+                    app_state["latest_snapshot"]["content_data"] = vorige_staat["web_snapshot"]["content_data"]
+                elif "content" in vorige_staat["web_snapshot"]:
+                    # Plaats oude data in een fallback-variabele
+                    app_state["latest_snapshot"]["content"] = vorige_staat["web_snapshot"]["content"]
+                
+                app_state["latest_snapshot"]["timestamp"] = vorige_staat["web_snapshot"].get("timestamp", "N/A")
+
             app_state["change_history"].clear()
             app_state["change_history"].extend(vorige_staat.get("web_changes", []))
     
@@ -62,7 +70,6 @@ def trigger_run():
         abort(403)
     
     logging.info("================== External Trigger Received: Starting Background Run ==================")
-    # Start main() in een achtergrond thread en return OK
     threading.Thread(target=main_task).start()
     return "OK: Scraper run triggered in background.", 200
 
@@ -74,19 +81,14 @@ def force_snapshot_route():
         abort(403)
     
     logging.info("================== Manual Background Run Triggered via Button ==================")
-    # Start main() in een achtergrond thread
     threading.Thread(target=main_task).start()
-    # Stuur de gebruiker ONMIDDELLIJK terug naar de homepage
     return redirect(url_for('home'))
 
 # --- ENVIRONMENT VARIABLES ---
-# Laden van gevoelige informatie en configuratie.
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 JSONBIN_API_KEY = os.environ.get('JSONBIN_API_KEY')
 JSONBIN_BIN_ID = os.environ.get('JSONBIN_BIN_ID')
-
-# Alle SMTP/EMAIL variabelen zijn verwijderd.
 
 # --- JSONBIN.IO FUNCTIES ---
 def load_state_from_jsonbin():
@@ -152,7 +154,8 @@ def login(session):
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
     try:
-        response = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx")
+        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        response = session.get(base_page_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
@@ -183,17 +186,15 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- NIEUW BLOK ---
+            # --- HIER WORDT DE GIS LINK GEZOCHT ---
             # Haal 'GisLink' op uit 'C' kolom (index 2)
             if 2 < len(kolom_data):
                 gis_cel = kolom_data[2]
                 link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
                 if link_tag and link_tag.get('href'):
-                    # Maak de relatieve URL (bv. 'Gis.aspx?key=...')
-                    # om tot een volledige URL (https://.../Gis.aspx?key=...)
-                    base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+                    # Maak de relatieve URL om tot een volledige URL
                     bestelling['GisLink'] = urljoin(base_page_url, link_tag['href'])
-            # --- EINDE NIEUW BLOK ---
+            # --- EINDE LINK BLOK ---
 
             bestellingen.append(bestelling)
         return bestellingen
@@ -248,6 +249,9 @@ def filter_snapshot_schepen(bestellingen, session):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
+    # Sorteer bestellingen op besteltijd (nieuwste eerst)
+    bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"), reverse=True)
+
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
@@ -271,8 +275,14 @@ def filter_snapshot_schepen(bestellingen, session):
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError):
             continue
+
+    # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
+    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    
     return gefilterd
 
+# De functie format_snapshot_email() is verwijderd.
 
 def filter_dubbele_schepen(bestellingen):
     """Filtert dubbele schepen uit de lijst."""
@@ -372,8 +382,7 @@ def vergelijk_bestellingen(oude, nieuwe):
 
 
 def format_wijzigingen_email(wijzigingen):
-    """Formatteert de lijst met wijzigingen naar een plain text body.
-    We gebruiken deze functie nog steeds voor de 'change_history' op de webpagina."""
+    """Formatteert de lijst met wijzigingen naar een plain text body."""
     body = []
     wijzigingen.sort(key=lambda x: x.get('status', ''))
     
@@ -404,12 +413,6 @@ def format_wijzigingen_email(wijzigingen):
     
     return "\n\n".join(body)
 
-#
-# De functie def verstuur_email(): is hier volledig VERWIJDERD.
-#
-# De functie def force_snapshot_task(): is hier ook VERWIJDERD.
-#
-
 def main():
     """De hoofdfunctie van de scraper, uitgevoerd door de cron job trigger."""
     if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
@@ -419,13 +422,19 @@ def main():
     vorige_staat = load_state_from_jsonbin()
     if vorige_staat is None:
         logging.warning("No previous state found in jsonbin, starting fresh.")
-        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
+        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": {}, "web_changes": []}
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
     
     with data_lock:
-        app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
+        if "web_snapshot" in vorige_staat:
+            if "content_data" in vorige_staat["web_snapshot"]:
+                app_state["latest_snapshot"]["content_data"] = vorige_staat["web_snapshot"]["content_data"]
+            elif "content" in vorige_staat["web_snapshot"]:
+                app_state["latest_snapshot"]["content"] = vorige_staat["web_snapshot"]["content"]
+            app_state["latest_snapshot"]["timestamp"] = vorige_staat["web_snapshot"].get("timestamp", "N/A")
+        
         app_state["change_history"].clear()
         app_state["change_history"].extend(vorige_staat.get("web_changes", []))
     
@@ -445,13 +454,14 @@ def main():
     nu_brussels = datetime.now(brussels_tz)
     
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
-    # De 'format_snapshot_email' functie is verwijderd, we slaan de data direct op.
     
     with data_lock:
         app_state["latest_snapshot"] = {
             "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content_data": snapshot_data  # <-- BELANGRIJKE WIJZIGING
+            "content_data": snapshot_data  # <-- We slaan de data structuur op
         }
+        # Verwijder de oude 'content' sleutel als die nog bestaat
+        app_state["latest_snapshot"].pop("content", None)
     
     # --- Change Detection ---
     if oude_bestellingen:
@@ -460,8 +470,6 @@ def main():
             inhoud = format_wijzigingen_email(wijzigingen)
             onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
-            
-            # De aanroep naar verstuur_email(onderwerp, inhoud) is hier VERWIJDERD.
             
             with data_lock:
                 app_state["change_history"].appendleft({
@@ -474,10 +482,7 @@ def main():
     else:
         logging.info("First run, establishing baseline.")
     
-    # --- Scheduled Reporting ---
-    # We houden deze logica, maar het stuurt geen e-mail meer.
-    # Het update alleen de 'last_report_key' zodat we niet 
-    # constant loggen dat het tijd is voor een rapport.
+    # --- Scheduled Reporting (Logica behouden, actie verwijderd) ---
     report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
     tijdstip_voor_rapport = None
     
@@ -490,18 +495,13 @@ def main():
         current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
         if current_key != last_report_key:
             logging.info(f"Time for scheduled report of {tijdstip_voor_rapport.strftime('%H:%M')}. (No email will be sent).")
-            
-            # De aanroep naar verstuur_email(onderwerp, snapshot_inhoud) is hier VERWIJDERD.
-            
             last_report_key = current_key
-        # else:
-            # logging.info(f"Scheduled report for {current_key} already logged. Skipping.")
         
     # --- Save State for Next Run ---
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
-        "web_snapshot": app_state["latest_snapshot"],
+        "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
     }
     save_state_to_jsonbin(nieuwe_staat)
