@@ -76,7 +76,12 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    secret = request.args.get('secret')
+    
+    # --- HIER IS DE CORRECTIE ---
+    # Het was 'request.args.get', het moet 'request.form.get' zijn.
+    secret = request.form.get('secret')
+    # --- EINDE CORRECTIE ---
+
     if secret != os.environ.get('SECRET_KEY'):
         logging.warning("Failed attempt to call /force-snapshot with an invalid secret key.")
         abort(403)
