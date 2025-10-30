@@ -391,18 +391,27 @@ def vergelijk_bestellingen(oude, nieuwe):
         n_best = nieuwe_dict[schip_naam] 
         o_best = oude_dict[schip_naam]
         
-        # --- START AANPASSING ---
         # Sla over als het Type (I/U) is gewijzigd.
-        # We rapporteren alleen wijzigingen als het type hetzelfde blijft.
         if n_best.get('Type') != o_best.get('Type'):
             continue
-        # --- EINDE AANPASSING ---
 
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
         
         if diff:
+            # --- START AANPASSING ---
+            # Haal de set van gewijzigde sleutels op
+            gewijzigde_sleutels = set(diff.keys())
+            
+            # Controleer op de specifieke voorwaarde:
+            # 1. Is het een Inkomend schip?
+            # 2. Is de *enige* wijziging de 'ETA/ETD'?
+            if n_best.get('Type') == 'I' and gewijzigde_sleutels == {'ETA/ETD'}:
+                logging.info(f"Onderdrukt: Alleen ETA/ETD gewijzigd voor inkomend schip {schip_naam}")
+                continue # Sla deze wijziging over
+            # --- EINDE AANPASSING ---
+
             relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
-            if relevante.intersection(diff.keys()):
+            if relevante.intersection(gewijzigde_sleutels): # Gebruik de set die we al hebben
                 if moet_rapporteren(n_best) or moet_rapporteren(o_best):
                     wijzigingen.append({
                         'Schip': n_best.get('Schip'),
