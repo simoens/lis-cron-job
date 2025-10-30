@@ -41,7 +41,7 @@
         }
         .button {
             float: right;
-            background-color: #f0c14b; /* Gele knop */
+            background-color: #f0c14b; /* Gele knop (jouw aanpassing) */
             color: white;
             padding: 10px 15px;
             border: none;
@@ -112,6 +112,8 @@
             font-weight: 500; 
         }
         
+        /* OUDE .unseen-change stijlen zijn hier VERWIJDERD */
+        
         /* Wijzigingen */
         .change-item {
             background-color: #fdfdfd;
@@ -144,7 +146,7 @@
             font-weight: 500;
         }
 
-        /* Stijl voor de Pop-up (Toast) */
+        /* --- NIEUWE STIJL VOOR DE POP-UP (TOAST) --- */
         .toast-notification {
             position: fixed;
             bottom: 20px;
@@ -217,12 +219,12 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>ETA MPET</th>
-                                    <th>CHECKPOINT</th> <th>Loods</th>
+                                    <th>ETA MPET</th> <th>Loods</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
+                                
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
@@ -232,8 +234,7 @@
                                         {% endif %}
                                     </td>
                                     <td>{{ schip.Besteltijd }}</td>
-                                    <td>{{ schip.berekende_eta }}</td>
-                                    <td>{{ schip.RTA | default('', true) }}</td> <td>{{ schip.Loods }}</td>
+                                    <td>{{ schip.berekende_eta }}</td> <td>{{ schip.Loods }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -255,6 +256,7 @@
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
+                                
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
@@ -312,7 +314,7 @@
 
 
     <script>
-        // Auto-refresh script
+        // Auto-refresh script (onveranderd)
         function getDisplayedTimestamp() {
             const el = document.getElementById('timestamp-display');
             if (el) {
@@ -347,6 +349,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             
+            // 1. Haal de data van de laatste wijziging op
             {% if changes and changes[0] %}
                 const latestChange = {
                     timestamp: {{ changes[0].timestamp | tojson }},
@@ -354,17 +357,26 @@
                     content: {{ changes[0].content | tojson }}
                 };
                 const storageKey = 'seenChangeTimestamp';
+
+                // 2. Haal de laatst 'geziene' timestamp op
                 const seenTimestamp = localStorage.getItem(storageKey);
 
+                // 3. Vergelijk ze
                 if (latestChange.timestamp !== seenTimestamp) {
+                    // DIT IS EEN NIEUWE WIJZIGING!
+                    
+                    // 4. Vul de pop-up
                     document.getElementById('toast-header').innerText = latestChange.subject;
                     document.querySelector('#toast-body pre').innerText = latestChange.content;
                     
+                    // 5. Toon de pop-up
                     const toast = document.getElementById('change-toast');
                     toast.style.display = 'block';
 
+                    // 6. Stel de 'close' knop in
                     document.getElementById('toast-close-btn').onclick = () => {
                         toast.style.display = 'none';
+                        // Sla op dat de gebruiker deze specifieke wijziging heeft gezien
                         localStorage.setItem(storageKey, latestChange.timestamp);
                     };
                 }
