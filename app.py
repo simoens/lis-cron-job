@@ -566,9 +566,9 @@ def main():
     save_state_to_jsonbin(nieuwe_staat)
     logging.info("--- Run Completed, state saved to jsonbin. ---")
   
- # --- Scheduled Reporting ---
- report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
- tijdstip_voor_rapport = None
+    # --- Scheduled Reporting ---
+    report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
+    tijdstip_voor_rapport = None
  
  for report_hour, report_minute in report_times:
   rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
