@@ -20,7 +20,7 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
         
-        /* Header styling uit screenshot */
+        /* Header styling */
         .header-bar {
             background-color: #343a40; /* Donkergrijs/zwart */
             color: white;
@@ -104,6 +104,12 @@
             text-decoration: underline;
         }
         
+        /* --- NIEUWE CLASS VOOR GROENE ACHTERGROND --- */
+        tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
+            background-color: #dff0d8; /* Een subtiel lichtgroen */
+            font-weight: 500; /* Maak de tekst iets dikker */
+        }
+        
         /* Wijzigingen */
         .change-item {
             background-color: #fdfdfd;
@@ -165,13 +171,13 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>ETA MPET</th>
+                                    <th>ETA Saeftinghe</th>
                                     <th>Loods</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
-                                <tr>
+                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
@@ -203,7 +209,7 @@
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
-                                <tr>
+                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
