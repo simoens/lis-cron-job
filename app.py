@@ -63,19 +63,19 @@ def trigger_run():
 
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
- """Endpoint called by the button on the webpage to force a new snapshot AND change detection."""
- secret = request.form.get('secret')
- if secret != os.environ.get('SECRET_KEY'):
-  abort(403)
- 
- logging.info("================== Manual FULL Run Triggered via Button ==================")
- try:
-  # DIT IS DE BELANGRIJKE WIJZIGING: Roep main() aan.
-  main() 
- except Exception as e:
-  logging.critical(f"FATAL ERROR during forced run: {e}")
- 
- return redirect(url_for('home')
+    """Endpoint called by the button on the webpage to force a new snapshot AND change detection."""
+    secret = request.form.get('secret')
+    if secret != os.environ.get('SECRET_KEY'):
+        abort(403)
+
+    logging.info("================== Manual FULL Run Triggered via Button ==================")
+    try:
+        # Roep de volledige main() functie aan
+        main() 
+    except Exception as e:
+        logging.critical(f"FATAL ERROR during forced run: {e}")
+
+    return redirect(url_for('home'))
 
 # --- ENVIRONMENT VARIABLES ---
 # Loading sensitive information and configuration from environment variables.
