@@ -21,7 +21,7 @@ app_state = {
 }
 data_lock = threading.Lock() 
 
-# --- FLASK APPLICATIE ---
+# --- FLASK APPLICATIE --
 app = Flask(__name__)
 
 # --- HELPER FUNCTIE VOOR ACHTERGROND TAKEN ---
