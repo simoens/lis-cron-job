@@ -198,7 +198,10 @@ def haal_bestellingen_op(session):
             logging.warning("De bestellingentabel werd niet gevonden.")
             return []
         
-        kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20}
+        # --- HIER IS DE AANPASSING ---
+        kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
+        # --- EINDE AANPASSING ---
+
         bestellingen = []
         
         for row in table.find_all('tr')[1:]: 
@@ -283,9 +286,12 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
     for b in bestellingen:
         try:
+            # --- HIER IS DE AANPASSING ---
             entry_point = b.get('Entry Point', '').lower()
-            if 'zeebrugge' in entry_point:
+            exit_point = b.get('Exit Point', '').lower()
+            if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
                 continue 
+            # --- EINDE AANPASSING ---
             
             besteltijd_str_raw = b.get("Besteltijd")
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
@@ -293,9 +299,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if besteltijd_naive.year == 1970:
                 continue
 
-            # --- HIER IS DE TIJDZONE-FIX ---
             besteltijd = brussels_tz.localize(besteltijd_naive)
-            # --- EINDE FIX ---
             
             if b.get("Type") == "U": 
                 if nu <= besteltijd <= grens_uit_toekomst:
@@ -349,7 +353,6 @@ def filter_dubbele_schepen(bestellingen):
             
     return list(unieke_schepen.values())
 
-# --- DEZE FUNCTIE WAS VERDWENEN ---
 def vergelijk_bestellingen(oude, nieuwe):
     """Vergelijkt oude en nieuwe bestellijsten."""
     
@@ -372,7 +375,6 @@ def vergelijk_bestellingen(oude, nieuwe):
         if besteltijd_naive.year == 1970: 
              return False
         
-        # --- HIER IS DE TIJDZONE-FIX ---
         besteltijd = brussels_tz.localize(besteltijd_naive)
         
         rapporteer = True
@@ -389,8 +391,12 @@ def vergelijk_bestellingen(oude, nieuwe):
             logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
             return False
 
-        if 'zeebrugge' in bestelling.get('Entry Point', '').lower():
+        # --- HIER IS DE AANPASSING ---
+        entry_point = bestelling.get('Entry Point', '').lower()
+        exit_point = bestelling.get('Exit Point', '').lower()
+        if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
             rapporteer = False
+        # --- EINDE AANPASSING ---
             
         return rapporteer
 
@@ -441,7 +447,6 @@ def vergelijk_bestellingen(oude, nieuwe):
                     })
             
     return wijzigingen
-# --- EINDE VERDWENEN FUNCTIE ---
 
 
 def format_wijzigingen_email(wijzigingen):
