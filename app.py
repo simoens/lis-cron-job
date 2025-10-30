@@ -154,7 +154,7 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
-    logging.info("--- DEBUG: Running NEW haal_bestellingen_op (v3 with GisLink logging) ---") # Bewijs dat de nieuwe code draait
+    logging.info("--- DEBUG: Running NEW haal_bestellingen_op (v4 with onclick logic) ---") # v4
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
@@ -192,19 +192,36 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- HIER WORDT DE GIS LINK GEZOCHT ---
+            # --- HIER WORDT DE GIS LINK GEZOCHT (Nieuwe v4 logica) ---
             if 2 < len(kolom_data):
                 gis_cel = kolom_data[2]
-                link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
-                if link_tag and link_tag.get('href'):
-                    gis_url = urljoin(base_page_url, link_tag['href'])
-                    bestelling['GisLink'] = gis_url
-                    if log_GisLink_success:
-                        logging.info(f"--- DEBUG: GIS LINK SUCCESS! Gevonden: {gis_url} ---")
-                        log_GisLink_success = False # Log dit maar één keer
+                link_tag = gis_cel.find('a') # Vind *eerst* de <a> tag
+
+                if link_tag and link_tag.get('onclick'):
+                    onclick_string = link_tag['onclick']
+                    # Zoek naar de URL binnen de window.open('...')
+                    match = re.search(r"window\.open\('([^']+)'", onclick_string)
+                    
+                    if match:
+                        # We hebben de relatieve URL gevonden
+                        relatieve_url_raw = match.group(1)
+                        # Maak HTML entities schoon (zoals &amp;)
+                        relatieve_url = relatieve_url_raw.replace("&amp;", "&")
+                        
+                        # Maak er een volledige URL van
+                        gis_url = urljoin(base_page_url, relatieve_url)
+                        bestelling['GisLink'] = gis_url
+                        
+                        if log_GisLink_success:
+                            logging.info(f"--- DEBUG: GIS LINK (via onclick) SUCCESS! Gevonden: {gis_url} ---")
+                            log_GisLink_success = False
+                    else:
+                        if log_GisLink_fail:
+                            logging.warning(f"--- DEBUG: GIS link_tag GEVONDEN, maar 'onclick' patroon (window.open) NIET GEVONDEN in: {onclick_string} ---")
+                            log_GisLink_fail = False
                 else:
                     if log_GisLink_fail:
-                        logging.warning(f"--- DEBUG: GIS link_tag NIET gevonden in gis_cel. Cell content: {str(gis_cel)} ---")
+                        logging.warning(f"--- DEBUG: GIS link_tag (<a>) NIET GEVONDEN of heeft geen 'onclick' in: {str(gis_cel)} ---")
                         log_GisLink_fail = False
             else:
                 if log_GisLink_fail:
