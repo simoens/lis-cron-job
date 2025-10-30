@@ -7,17 +7,17 @@ import os
 import json 
 from collections import deque
 import pytz
-from flask import Flask, render_template, request, abort, redirect, url_for, jsonify # <-- VOEG JSOINFY TOE
+from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
 import threading
 import time
-# from urllib.parse import urljoin # Import is verwijderd
+# (Geen nieuwe imports nodig, 're' hadden we al)
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
 app_state = {
-    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": []}}, # Gebruik content_data
+    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": []}}, 
     "change_history": deque(maxlen=10)
 }
 data_lock = threading.Lock() 
@@ -33,7 +33,6 @@ def main_task():
         main()
         logging.info("--- Background task finished ---")
     except Exception as e:
-        # Log de volledige traceback bij een fout
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
 @app.route('/')
@@ -57,14 +56,11 @@ def home():
             app_state["change_history"].clear()
             app_state["change_history"].extend(recent_changes_list)
     
-    # De 'all_change_text' logica is hier verwijderd.
-    
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
                                 changes=list(app_state["change_history"]),
                                 secret_key=os.environ.get('SECRET_KEY'))
-                                # 'all_change_text' wordt niet meer doorgegeven
 
 @app.route('/trigger-run')
 def trigger_run():
@@ -81,7 +77,7 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    secret = request.form.get('secret')
+    secret = request.args.get('secret')
     if secret != os.environ.get('SECRET_KEY'):
         abort(403)
     
@@ -196,7 +192,6 @@ def haal_bestellingen_op(session):
                         value = "Loods werd toegewezen"
                     bestelling[k] = value
             
-            # Haal 'ReisId' op uit 'Schip' kolom (index 11)
             if 11 < len(kolom_data):
                 schip_cel = kolom_data[11]
                 link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx\?ReisId='))
@@ -205,8 +200,6 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- BLOK VOOR GIS LINK IS HIER VOLLEDIG VERWIJDERD ---
-
             bestellingen.append(bestelling)
             
         logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden.")
@@ -236,9 +229,13 @@ def haal_pta_van_reisplan(session, reis_id):
                         laatste_pta_gevonden = match.group(0)
         
         if laatste_pta_gevonden:
-            # logging.info(f"Last PTA found for ReisId {reis_id}: {laatste_pta_gevonden}") # Te veel spam
             try:
-                dt_obj = datetime.strptime(laatste_pta_gevonden, '%d-%m %H:%M')
+                # --- AANPASSING HIER ---
+                # Maak de PTA string schoon VOORDAT we parsen
+                pta_schoon = re.sub(r'\s+', ' ', laatste_pta_gevonden.strip())
+                dt_obj = datetime.strptime(pta_schoon, '%d-%m %H:%M')
+                # --- EINDE AANPASSING ---
+                
                 now = datetime.now()
                 dt_obj = dt_obj.replace(year=now.year)
                 if dt_obj < now - timedelta(days=180):
@@ -248,42 +245,45 @@ def haal_pta_van_reisplan(session, reis_id):
                 logging.warning(f"Could not parse PTA format '{laatste_pta_gevonden}' for ReisId {reis_id}.")
                 return laatste_pta_gevonden
         
-        # logging.warning(f"No row with a valid PTA for 'Saeftinghe - Zandvliet' found for ReisId {reis_id}")
         return None
     except Exception as e:
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
         return None
 
-def filter_snapshot_schepen(bestellingen, session, nu):
+def filter_snapshot_schepen(bestellingen, session, nu): 
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
-
+    
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
-
-    # Sorteer bestellingen op besteltijd (nieuwste eerst)
-    bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
+    
+    # --- AANPASSING 1 ---
+    # Maak de string schoon (vervang U+00A0) VOORDAT we sorteren
+    bestellingen.sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"), reverse=True)
 
     for b in bestellingen:
         try:
-            # Filter "Zeebrugge"
             entry_point = b.get('Entry Point', '').lower()
             if 'zeebrugge' in entry_point:
                 continue 
-
-            besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str: 
+            
+            # --- AANPASSING 2 ---
+            # Maak de string schoon VOORDAT we parsen
+            besteltijd_str_raw = b.get("Besteltijd")
+            if not besteltijd_str_raw: 
                 continue
+            besteltijd_str = re.sub(r'\s+', ' ', besteltijd_str_raw.strip())
+            # --- EINDE AANPASSING ---
+            
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
-
-            if b.get("Type") == "U": # Uitgaand
+            
+            if b.get("Type") == "U": 
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
-
-            elif b.get("Type") == "I": # Inkomend
-                if grens_in_verleden <= bestijd <= grens_in_toekomst:
-                    # Bepaal de ETA MPET
+                    
+            elif b.get("Type") == "I": 
+                if grens_in_verleden <= besteltijd <= grens_in_toekomst:
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
                     if b['berekende_eta'] == 'N/A':
@@ -292,19 +292,35 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                         elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
-
-                    # De "ETA in het verleden"-filter is hier verwijderd
-
+                    
+                    if b.get('berekende_eta') and b['berekende_eta'] != 'N/A':
+                        try:
+                            # --- AANPASSING 3 ---
+                            # Maak ook de ETA string schoon VOORDAT we parsen
+                            eta_schoon = re.sub(r'\s+', ' ', b['berekende_eta'].strip())
+                            eta_datetime = datetime.strptime(eta_schoon, "%d/%m/%y %H:%M")
+                            # --- EINDE AANPASSING ---
+                            
+                            eta_datetime_aware = pytz.timezone('Europe/Brussels').localize(eta_datetime)
+                            
+                            if eta_datetime_aware < nu: 
+                                logging.info(f"Filter: {b.get('Schip')} wordt overgeslagen, ETA MPET ({b['berekende_eta']}) ligt in het verleden.")
+                                continue 
+                        except (ValueError, TypeError):
+                            logging.warning(f"Kon ETA '{b['berekende_eta']}' niet parsen voor {b.get('Schip')} bij verleden-check.")
+                            pass 
+                            
                     gefilterd["INKOMEND"].append(b)
-
+                    
         except (ValueError, TypeError):
-            logging.warning(f"Kon besteltijd niet parsen: {b.get('Besteltijd')}. Schip wordt overgeslagen.", exc_info=False)
+            logging.warning(f"Kon besteltijd '{besteltijd_str_raw}' niet parsen. Schip wordt overgeslagen.", exc_info=False)
             continue
 
-    # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
-    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
-    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"))
-
+    # --- AANPASSING 4 & 5 ---
+    # Maak de string schoon VOORDAT we sorteren
+    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    
     return gefilterd
 
 def filter_dubbele_schepen(bestellingen):
@@ -319,8 +335,15 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                huidige_tijd = datetime.strptime(b.get("Besteltijd") or '01/01/70 00:00', "%d/%m/%y %H:%M")
-                opgeslagen_tijd = datetime.strptime(unieke_schepen[schip_naam_gekuist].get("Besteltijd") or '01/01/70 00:00', "%d/%m/%y %H:%M")
+                # --- AANPASSING 6 ---
+                # Maak de string schoon VOORDAT we parsen
+                tijd_str_huidig = re.sub(r'\s+', ' ', b.get("Besteltijd") or '01/01/70 00:00')
+                tijd_str_opgeslagen = re.sub(r'\s+', ' ', unieke_schepen[schip_naam_gekuist].get("Besteltijd") or '01/01/70 00:00')
+                
+                huidige_tijd = datetime.strptime(tijd_str_huidig, "%d/%m/%y %H:%M")
+                opgeslagen_tijd = datetime.strptime(tijd_str_opgeslagen, "%d/%m/%y %H:%M")
+                # --- EINDE AANPASSING ---
+                
                 if huidige_tijd > opgeslagen_tijd:
                     unieke_schepen[schip_naam_gekuist] = b
             except (ValueError, TypeError):
@@ -345,8 +368,12 @@ def vergelijk_bestellingen(oude, nieuwe):
     nu = datetime.now()
     
     def moet_rapporteren(bestelling):
-        besteltijd_str = bestelling.get('Besteltijd', '').strip()
-        if not besteltijd_str: return False
+        # --- AANPASSING 7 ---
+        # Maak de string schoon VOORDAT we parsen
+        besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
+        if not besteltijd_str_raw: return False
+        besteltijd_str = re.sub(r'\s+', ' ', besteltijd_str_raw)
+        # --- EINDE AANPASSING ---
         
         rapporteer = True
         type_schip = bestelling.get('Type')
@@ -393,27 +420,20 @@ def vergelijk_bestellingen(oude, nieuwe):
         n_best = nieuwe_dict[schip_naam] 
         o_best = oude_dict[schip_naam]
         
-        # Sla over als het Type (I/U) is gewijzigd.
         if n_best.get('Type') != o_best.get('Type'):
             continue
 
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
         
         if diff:
-            # --- START AANPASSING ---
-            # Haal de set van gewijzigde sleutels op
             gewijzigde_sleutels = set(diff.keys())
             
-            # Controleer op de specifieke voorwaarde:
-            # 1. Is het een Inkomend schip?
-            # 2. Is de *enige* wijziging de 'ETA/ETD'?
             if n_best.get('Type') == 'I' and gewijzigde_sleutels == {'ETA/ETD'}:
                 logging.info(f"Onderdrukt: Alleen ETA/ETD gewijzigd voor inkomend schip {schip_naam}")
-                continue # Sla deze wijziging over
-            # --- EINDE AANPASSING ---
+                continue 
 
             relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
-            if relevante.intersection(gewijzigde_sleutels): # Gebruik de set die we al hebben
+            if relevante.intersection(gewijzigde_sleutels): 
                 if moet_rapporteren(n_best) or moet_rapporteren(o_best):
                     wijzigingen.append({
                         'Schip': n_best.get('Schip'),
@@ -486,7 +506,7 @@ def main():
         logging.error("Login failed during main() run.")
         return
     
-    nieuwe_bestellingen = haal_bestellingen_op(session)
+    nieuwe_bestellingen = haal_bestellingen_op(session) 
     if not nieuwe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
@@ -494,10 +514,8 @@ def main():
     # --- Genereer ALTIJD een snapshot ---
     logging.info("Generating new snapshot for webpage (every run).")
     brussels_tz = pytz.timezone('Europe/Brussels')
-    nu_brussels = datetime.now(brussels_tz) # <-- We hebben de correcte tijd hier
+    nu_brussels = datetime.now(brussels_tz) 
     
-    # --- HIER IS DE AANPASSING ---
-    # Geef 'nu_brussels' door aan de filterfunctie
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session, nu_brussels)
     
     with data_lock:
@@ -543,7 +561,7 @@ def main():
         
     # --- Save State for Next Run ---
     nieuwe_staat = {
-        "bestellingen": nieuwe_bestellingen,
+        "bestellingen": nieuwe_bestellingen, 
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"],
         "web_changes": list(app_state["change_history"])
