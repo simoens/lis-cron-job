@@ -11,7 +11,7 @@
             padding: 0;
             background-color: #f0f2f5;
             color: #333;
-        }F
+        }
         .container {
             max-width: 1200px;
             margin: 20px auto;
@@ -41,7 +41,7 @@
         }
         .button {
             float: right;
-            background-color: #f0c14b; /* Gele knop */
+            background-color: #f0c14b; /* Gele knop (jouw aanpassing) */
             color: white;
             padding: 10px 15px;
             border: none;
@@ -112,16 +112,7 @@
             font-weight: 500; 
         }
         
-        /* Gele 'unseen' stijl */
-        tr.unseen-change, tr.unseen-change:nth-child(even) {
-            background-color: #fffbe6; /* Opvallend lichtgeel */
-            font-weight: bold;
-        }
-        tr.pilot-assigned.unseen-change, 
-        tr.pilot-assigned.unseen-change:nth-child(even) {
-            background-color: #e8f5e9; 
-            font-weight: bold;
-        }
+        /* OUDE .unseen-change stijlen zijn hier VERWIJDERD */
         
         /* Wijzigingen */
         .change-item {
@@ -154,6 +145,48 @@
             margin-top: 15px;
             font-weight: 500;
         }
+
+        /* --- NIEUWE STIJL VOOR DE POP-UP (TOAST) --- */
+        .toast-notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-left: 5px solid #007bff; /* Blauw accent */
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 1000;
+            display: none; /* Standaard verborgen */
+            max-width: 400px;
+        }
+        .toast-header {
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .toast-body pre {
+            margin: 0;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.85em;
+        }
+        .toast-close {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #aaa;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .toast-close:hover {
+            color: #000;
+        }
+
     </style>
 </head>
 <body>
@@ -186,25 +219,13 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>ETA MPET</th>
-                                    <th>Loods</th>
+                                    <th>ETA MPET</th> <th>Loods</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
                                 
-                                {% set clean_name = schip.Schip.replace('(d)', '').strip() %}
-                                {% set row_classes = [] %}
-                                {% set js_event = '' %}
-                                
-                                {% if schip.Loods == 'Loods werd toegewezen' %}{% set _ = row_classes.append('pilot-assigned') %}{% endif %}
-                                
-                                {% if clean_name in all_change_text %}
-                                    {% set _ = row_classes.append('unseen-change') %}
-                                    {% set js_event = 'onmouseover="this.classList.remove(\'unseen-change\')"' %}
-                                {% endif %}
-                                
-                                <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
+                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
@@ -213,8 +234,7 @@
                                         {% endif %}
                                     </td>
                                     <td>{{ schip.Besteltijd }}</td>
-                                    <td>{{ schip.berekende_eta }}</td>
-                                    <td>{{ schip.Loods }}</td>
+                                    <td>{{ schip.berekende_eta }}</td> <td>{{ schip.Loods }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -237,18 +257,7 @@
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
                                 
-                                {% set clean_name = schip.Schip.replace('(d)', '').strip() %}
-                                {% set row_classes = [] %}
-                                {% set js_event = '' %}
-                                
-                                {% if schip.Loods == 'Loods werd toegewezen' %}{% set _ = row_classes.append('pilot-assigned') %}{% endif %}
-                                
-                                {% if clean_name in all_change_text %}
-                                    {% set _ = row_classes.append('unseen-change') %}
-                                    {% set js_event = 'onmouseover="this.classList.remove(\'unseen-change\')"' %}
-                                {% endif %}
-                                
-                                <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
+                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
@@ -295,35 +304,37 @@
         </div>
     </div>
 
+    <div id="change-toast" class="toast-notification">
+        <span id="toast-close-btn" class="toast-close">&times;</span>
+        <div id="toast-header" class="toast-header"></div>
+        <div id="toast-body" class="toast-body">
+            <pre></pre>
+        </div>
+    </div>
+
+
     <script>
-        // Functie om de huidige timestamp van de pagina te lezen
+        // Auto-refresh script (onveranderd)
         function getDisplayedTimestamp() {
             const el = document.getElementById('timestamp-display');
             if (el) {
-                // Pak de tekst "Laatste update op: 30-10-2025 02:19:14"
-                // en isoleer de timestamp.
                 return el.innerText.replace('Laatste update op: ', '').trim();
             }
             return null;
         }
 
-        // De 'poller'
         const currentTimestamp = getDisplayedTimestamp();
 
         if (currentTimestamp) {
-            // Start de check elke 60 seconden
             setInterval(async () => {
                 try {
-                    // Vraag de server om de laatst bekende timestamp
                     const response = await fetch('/status');
-                    if (!response.ok) return; // Doe niets bij een serverfout
+                    if (!response.ok) return; 
 
                     const data = await response.json();
                     const newTimestamp = data.timestamp;
 
-                    // Vergelijk de timestamps
                     if (newTimestamp && newTimestamp !== "N/A" && newTimestamp !== currentTimestamp) {
-                        // Ze zijn anders! Herlaad de pagina.
                         console.log(`Nieuwe data gevonden (Nieuw: ${newTimestamp}, Oud: ${currentTimestamp}). Pagina wordt herladen.`);
                         location.reload();
                     }
@@ -333,6 +344,44 @@
                 }
             }, 60000); // 60000 ms = 1 minuut
         }
+    </script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            // 1. Haal de data van de laatste wijziging op
+            {% if changes and changes[0] %}
+                const latestChange = {
+                    timestamp: {{ changes[0].timestamp | tojson }},
+                    subject: {{ changes[0].onderwerp | tojson }},
+                    content: {{ changes[0].content | tojson }}
+                };
+                const storageKey = 'seenChangeTimestamp';
+
+                // 2. Haal de laatst 'geziene' timestamp op
+                const seenTimestamp = localStorage.getItem(storageKey);
+
+                // 3. Vergelijk ze
+                if (latestChange.timestamp !== seenTimestamp) {
+                    // DIT IS EEN NIEUWE WIJZIGING!
+                    
+                    // 4. Vul de pop-up
+                    document.getElementById('toast-header').innerText = latestChange.subject;
+                    document.querySelector('#toast-body pre').innerText = latestChange.content;
+                    
+                    // 5. Toon de pop-up
+                    const toast = document.getElementById('change-toast');
+                    toast.style.display = 'block';
+
+                    // 6. Stel de 'close' knop in
+                    document.getElementById('toast-close-btn').onclick = () => {
+                        toast.style.display = 'none';
+                        // Sla op dat de gebruiker deze specifieke wijziging heeft gezien
+                        localStorage.setItem(storageKey, latestChange.timestamp);
+                    };
+                }
+            {% endif %}
+        });
     </script>
 
 </body>
