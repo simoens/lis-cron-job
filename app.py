@@ -10,7 +10,7 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for
 import threading
 import time
-from urllib.parse import urljoin # <-- FIX 1: Import voor de links
+from urllib.parse import urljoin # <-- HIER IS DE LINK-IMPORT
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -155,7 +155,7 @@ def login(session):
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
     try:
-        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx" # FIX 1: URL voor links
+        base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx" # URL voor links
         response = session.get(base_page_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
@@ -187,7 +187,7 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             
-            # --- FIX 1: HIER WORDT DE GIS LINK GEZOCHT ---
+            # --- HIER WORDT DE GIS LINK GEZOCHT ---
             if 2 < len(kolom_data):
                 gis_cel = kolom_data[2]
                 link_tag = gis_cel.find('a', href=re.compile(r'Gis\.aspx\?key='))
@@ -248,7 +248,7 @@ def filter_snapshot_schepen(bestellingen, session):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
-    # --- FIX 2: HIER ZIT DE CRASHFIX ---
+    # --- HIER ZIT DE CRASHFIX ---
     # Sorteer bestellingen op besteltijd (nieuwste eerst)
     # Gebruik 'or' om lege strings '' en None op te vangen.
     bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
@@ -347,7 +347,7 @@ def vergelijk_bestellingen(oude, nieuwe):
         return rapporteer
 
     for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
-        n_best = nieuwe_dict[schip_naam]
+        n_best = newe_dict[schip_naam]
         if moet_rapporteren(n_best):
             wijzigingen.append({
                 'Schip': n_best.get('Schip'), 
@@ -365,7 +365,7 @@ def vergelijk_bestellingen(oude, nieuwe):
             })
 
     for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
-        n_best = nieuwe_dict[schip_naam]
+        n_best = newe_dict[schip_naam]
         o_best = oude_dict[schip_naam]
         
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
@@ -445,7 +445,7 @@ def main():
         logging.error("Login failed during main() run.")
         return
     
-    nieuwe_bestellingen = haal_bestellingen_op(session)
+    nieuwe_bestellingen = haal_bestellingen_op(session) # Deze lijst bevat nu 'GisLink'
     if not nieuwe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
@@ -455,12 +455,12 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz)
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # FIX 1: Deze data bevat nu 'GisLink'
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # Deze data bevat nu 'GisLink'
     
     with data_lock:
         app_state["latest_snapshot"] = {
             "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content_data": snapshot_data  # FIX 1: We slaan de data structuur op
+            "content_data": snapshot_data  # We slaan de data structuur op
         }
         # Verwijder de oude 'content' sleutel als die nog bestaat
         app_state["latest_snapshot"].pop("content", None)
@@ -500,8 +500,9 @@ def main():
             last_report_key = current_key
         
     # --- Save State for Next Run ---
+    # --- HIER IS DE TYPEFOUT-FIX ---
     nieuwe_staat = {
-        "bestellingen": nieuwe_bestellingen,
+        "bestellingen": nieuwe_bestellingen, # Was 'newe_bestellingen'
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
