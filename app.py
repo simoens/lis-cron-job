@@ -10,7 +10,6 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
 import threading
 import time
-# (Geen nieuwe imports nodig, 're' hadden we al)
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -77,7 +76,7 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    secret = request.args.get('secret')
+    secret = request.form.get('secret')
     if secret != os.environ.get('SECRET_KEY'):
         abort(403)
     
@@ -129,6 +128,13 @@ def save_state_to_jsonbin(state):
     except Exception as e:
         logging.error(f"Error saving state to jsonbin.io: {e}")
 
+# --- HELPER: DATUM SCHOONMAKEN ---
+def clean_date_string(date_str):
+    """Vervangt onzichtbare spaties (U+00A0) door gewone spaties."""
+    if not date_str:
+        return None
+    return re.sub(r'\s+', ' ', date_str.strip())
+
 # --- SCRAPER FUNCTIES ---
 def login(session):
     """Logt in op de LIS website en retourneert True bij succes."""
@@ -165,7 +171,7 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
-    logging.info("--- Running haal_bestellingen_op (v5, No-Link-Scraping) ---")
+    logging.info("--- Running haal_bestellingen_op (v6, No-Link, Whitespace-Fix) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
@@ -230,11 +236,8 @@ def haal_pta_van_reisplan(session, reis_id):
         
         if laatste_pta_gevonden:
             try:
-                # --- AANPASSING HIER ---
-                # Maak de PTA string schoon VOORDAT we parsen
-                pta_schoon = re.sub(r'\s+', ' ', laatste_pta_gevonden.strip())
+                pta_schoon = clean_date_string(laatste_pta_gevonden) # FIX
                 dt_obj = datetime.strptime(pta_schoon, '%d-%m %H:%M')
-                # --- EINDE AANPASSING ---
                 
                 now = datetime.now()
                 dt_obj = dt_obj.replace(year=now.year)
@@ -258,9 +261,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
-    # --- AANPASSING 1 ---
-    # Maak de string schoon (vervang U+00A0) VOORDAT we sorteren
-    bestellingen.sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"), reverse=True)
+    # Sorteer bestellingen op besteltijd (nieuwste eerst)
+    bestellingen.sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True) # FIX
 
     for b in bestellingen:
         try:
@@ -268,13 +270,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if 'zeebrugge' in entry_point:
                 continue 
             
-            # --- AANPASSING 2 ---
-            # Maak de string schoon VOORDAT we parsen
             besteltijd_str_raw = b.get("Besteltijd")
-            if not besteltijd_str_raw: 
+            besteltijd_str = clean_date_string(besteltijd_str_raw) # FIX
+            if not besteltijd_str: 
                 continue
-            besteltijd_str = re.sub(r'\s+', ' ', besteltijd_str_raw.strip())
-            # --- EINDE AANPASSING ---
             
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
             
@@ -293,22 +292,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     
-                    if b.get('berekende_eta') and b['berekende_eta'] != 'N/A':
-                        try:
-                            # --- AANPASSING 3 ---
-                            # Maak ook de ETA string schoon VOORDAT we parsen
-                            eta_schoon = re.sub(r'\s+', ' ', b['berekende_eta'].strip())
-                            eta_datetime = datetime.strptime(eta_schoon, "%d/%m/%y %H:%M")
-                            # --- EINDE AANPASSING ---
-                            
-                            eta_datetime_aware = pytz.timezone('Europe/Brussels').localize(eta_datetime)
-                            
-                            if eta_datetime_aware < nu: 
-                                logging.info(f"Filter: {b.get('Schip')} wordt overgeslagen, ETA MPET ({b['berekende_eta']}) ligt in het verleden.")
-                                continue 
-                        except (ValueError, TypeError):
-                            logging.warning(f"Kon ETA '{b['berekende_eta']}' niet parsen voor {b.get('Schip')} bij verleden-check.")
-                            pass 
+                    # De "ETA in het verleden" filter is hier NIET AANWEZIG
                             
                     gefilterd["INKOMEND"].append(b)
                     
@@ -316,10 +300,9 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             logging.warning(f"Kon besteltijd '{besteltijd_str_raw}' niet parsen. Schip wordt overgeslagen.", exc_info=False)
             continue
 
-    # --- AANPASSING 4 & 5 ---
-    # Maak de string schoon VOORDAT we sorteren
-    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"))
-    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(re.sub(r'\s+', ' ', x.get('Besteltijd') or '01/01/70 00:00'), "%d/%m/%y %H:%M"))
+    # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
+    gefilterd["INKOMEND"].sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M")) # FIX
+    gefilterd["UITGAAND"].sort(key=lambda x: datetime.strptime(clean_date_string(x.get('Besteltijd')) or '01/01/70 00:00', "%d/%m/%y %H:%M")) # FIX
     
     return gefilterd
 
@@ -335,14 +318,11 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                # --- AANPASSING 6 ---
-                # Maak de string schoon VOORDAT we parsen
-                tijd_str_huidig = re.sub(r'\s+', ' ', b.get("Besteltijd") or '01/01/70 00:00')
-                tijd_str_opgeslagen = re.sub(r'\s+', ' ', unieke_schepen[schip_naam_gekuist].get("Besteltijd") or '01/01/70 00:00')
+                tijd_str_huidig = clean_date_string(b.get("Besteltijd")) or '01/01/70 00:00' # FIX
+                tijd_str_opgeslagen = clean_date_string(unieke_schepen[schip_naam_gekuist].get("Besteltijd")) or '01/01/70 00:00' # FIX
                 
                 huidige_tijd = datetime.strptime(tijd_str_huidig, "%d/%m/%y %H:%M")
                 opgeslagen_tijd = datetime.strptime(tijd_str_opgeslagen, "%d/%m/%y %H:%M")
-                # --- EINDE AANPASSING ---
                 
                 if huidige_tijd > opgeslagen_tijd:
                     unieke_schepen[schip_naam_gekuist] = b
@@ -365,15 +345,12 @@ def vergelijk_bestellingen(oude, nieuwe):
     nieuwe_schepen_namen = set(nieuwe_dict.keys())
 
     wijzigingen = []
-    nu = datetime.now()
+    nu = datetime.now() # UTC tijd van de server (OK voor 'moet_rapporteren')
     
     def moet_rapporteren(bestelling):
-        # --- AANPASSING 7 ---
-        # Maak de string schoon VOORDAT we parsen
         besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
-        if not besteltijd_str_raw: return False
-        besteltijd_str = re.sub(r'\s+', ' ', besteltijd_str_raw)
-        # --- EINDE AANPASSING ---
+        besteltijd_str = clean_date_string(besteltijd_str_raw) # FIX
+        if not besteltijd_str: return False
         
         rapporteer = True
         type_schip = bestelling.get('Type')
