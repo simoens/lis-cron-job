@@ -11,7 +11,7 @@
             padding: 0;
             background-color: #f0f2f5;
             color: #333;
-        }
+        }F
         .container {
             max-width: 1200px;
             margin: 20px auto;
@@ -41,7 +41,7 @@
         }
         .button {
             float: right;
-            background-color: #f0c14b; /* Geleknop */
+            background-color: #f0c14b; /* Gele knop */
             color: white;
             padding: 10px 15px;
             border: none;
@@ -112,16 +112,14 @@
             font-weight: 500; 
         }
         
-        /* --- AANGEPASTE STIJL VOOR 'UNSEEN' --- */
-        /* Dit is de opvallende 'unseen' stijl */
+        /* Gele 'unseen' stijl */
         tr.unseen-change, tr.unseen-change:nth-child(even) {
             background-color: #fffbe6; /* Opvallend lichtgeel */
             font-weight: bold;
         }
-        /* Zorgt dat groen en geel goed combineren */
         tr.pilot-assigned.unseen-change, 
         tr.pilot-assigned.unseen-change:nth-child(even) {
-            background-color: #e8f5e9; /* Iets geler groen */
+            background-color: #e8f5e9; 
             font-weight: bold;
         }
         
@@ -173,7 +171,9 @@
         <div class="content-box">
 
             <h2>Laatste LIS Overzicht</h2>
-            <p style="color: #666; margin-top: -5px;">Laatste update op: {{ snapshot.timestamp }}</p>
+            <p style="color: #666; margin-top: -5px;" id="timestamp-display">
+                Laatste update op: {{ snapshot.timestamp }}
+            </p>
 
             {% if snapshot.content_data %}
                 <div class="snapshot-content">
@@ -205,7 +205,7 @@
                                 {% endif %}
                                 
                                 <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
-                                <td>
+                                    <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
                                         {% else %}
@@ -249,7 +249,7 @@
                                 {% endif %}
                                 
                                 <tr class="{{ row_classes|join(' ') }}" {{ js_event|safe }}>
-                                <td>
+                                    <td>
                                         {% if schip.GisLink %}
                                             <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
                                         {% else %}
@@ -294,6 +294,46 @@
 
         </div>
     </div>
+
+    <script>
+        // Functie om de huidige timestamp van de pagina te lezen
+        function getDisplayedTimestamp() {
+            const el = document.getElementById('timestamp-display');
+            if (el) {
+                // Pak de tekst "Laatste update op: 30-10-2025 02:19:14"
+                // en isoleer de timestamp.
+                return el.innerText.replace('Laatste update op: ', '').trim();
+            }
+            return null;
+        }
+
+        // De 'poller'
+        const currentTimestamp = getDisplayedTimestamp();
+
+        if (currentTimestamp) {
+            // Start de check elke 60 seconden
+            setInterval(async () => {
+                try {
+                    // Vraag de server om de laatst bekende timestamp
+                    const response = await fetch('/status');
+                    if (!response.ok) return; // Doe niets bij een serverfout
+
+                    const data = await response.json();
+                    const newTimestamp = data.timestamp;
+
+                    // Vergelijk de timestamps
+                    if (newTimestamp && newTimestamp !== "N/A" && newTimestamp !== currentTimestamp) {
+                        // Ze zijn anders! Herlaad de pagina.
+                        console.log(`Nieuwe data gevonden (Nieuw: ${newTimestamp}, Oud: ${currentTimestamp}). Pagina wordt herladen.`);
+                        location.reload();
+                    }
+                    
+                } catch (error) {
+                    console.error('Fout bij pollen:', error);
+                }
+            }, 60000); // 60000 ms = 1 minuut
+        }
+    </script>
 
 </body>
 </html>
