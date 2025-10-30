@@ -347,7 +347,7 @@ def vergelijk_bestellingen(oude, nieuwe):
         return rapporteer
 
     for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
-        n_best = newe_dict[schip_naam]
+        n_best = nieuwe_dict[schip_naam]
         if moet_rapporteren(n_best):
             wijzigingen.append({
                 'Schip': n_best.get('Schip'), 
