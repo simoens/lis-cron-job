@@ -365,7 +365,7 @@ def vergelijk_bestellingen(oude, nieuwe):
             })
 
     for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
-        n_best = newe_dict[schip_naam]
+        n_best = nieuwe_dict[schip_naam]
         o_best = oude_dict[schip_naam]
         
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
