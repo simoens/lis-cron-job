@@ -475,7 +475,7 @@ def main():
         logging.error("Login failed during main() run.")
         return
     
-    nieuwe_bestellingen = haal_bestellingen_op(session) # Deze lijst bevat nu GEEN 'GisLink'
+    nieuwe_bestellingen = haal_bestellingen_op(session)
     if not nieuwe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
@@ -483,16 +483,15 @@ def main():
     # --- Genereer ALTIJD een snapshot ---
     logging.info("Generating new snapshot for webpage (every run).")
     brussels_tz = pytz.timezone('Europe/Brussels')
-    nu_brussels = datetime.now(brussels_tz)
+    nu_brussels = datetime.now(brussels_tz) # <-- We hebben de correcte tijd hier al
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session) # Deze data bevat nu GEEN 'GisLink'
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
     
     with data_lock:
         app_state["latest_snapshot"] = {
-            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'),
-            "content_data": snapshot_data  # We slaan de data structuur op
+            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), # <-- Correcte tijd
+            "content_data": snapshot_data
         }
-        # Verwijder de oude 'content' sleutel als die nog bestaat
         app_state["latest_snapshot"].pop("content", None)
     
     # --- Change Detection ---
@@ -505,7 +504,9 @@ def main():
             
             with data_lock:
                 app_state["change_history"].appendleft({
-                    "timestamp": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                    # --- HIER IS DE FIX ---
+                    # Gebruik 'nu_brussels' i.p.v. 'datetime.now()'
+                    "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), # <-- Gecorrigeerd
                     "onderwerp": onderwerp,
                     "content": inhoud
                 })
@@ -530,11 +531,10 @@ def main():
             last_report_key = current_key
         
     # --- Save State for Next Run ---
-    # --- HIER IS DE TYPEFOUT-FIX ---
     nieuwe_staat = {
-        "bestellingen": nieuwe_bestellingen, # <-- Dit is de GECORRIGEERDE typefout
+        "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
-        "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
+        "web_snapshot": app_state["latest_snapshot"],
         "web_changes": list(app_state["change_history"])
     }
     save_state_to_jsonbin(nieuwe_staat)
