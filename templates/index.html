@@ -41,7 +41,7 @@
         }
         .button {
             float: right;
-            background-color: #f0c14b; /* Gele knop (jouw aanpassing) */
+            background-color: #f0c14b; /* Gele knop */
             color: white;
             padding: 10px 15px;
             border: none;
@@ -54,6 +54,12 @@
         }
         .button:hover {
             background-color: #5a6268;
+        }
+        /* Stijl voor als de knop 'disabled' is */
+        .button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.7;
         }
         
         /* Content styling */
@@ -88,7 +94,6 @@
             border: 1px solid #ddd;
             padding: 10px;
             text-align: left;
-            /* Voeg transitie toe voor soepele kleurverandering */
             transition: background-color 0.3s ease;
         }
         th {
@@ -111,8 +116,6 @@
             background-color: #dff0d8; /* Lichtgroen */
             font-weight: 500; 
         }
-        
-        /* OUDE .unseen-change stijlen zijn hier VERWIJDERD */
         
         /* Wijzigingen */
         .change-item {
@@ -146,7 +149,7 @@
             font-weight: 500;
         }
 
-        /* --- NIEUWE STIJL VOOR DE POP-UP (TOAST) --- */
+        /* Stijl voor de Pop-up (Toast) */
         .toast-notification {
             position: fixed;
             bottom: 20px;
@@ -186,7 +189,6 @@
         .toast-close:hover {
             color: #000;
         }
-
     </style>
 </head>
 <body>
@@ -194,9 +196,9 @@
     <div class="container">
         
         <div class="header-bar">
-            <form action="{{ url_for('force_snapshot_route') }}" method="POST">
+            <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
                 <input type="hidden" name="secret" value="{{ secret_key }}">
-                <button type="submit" class="button">Forceer Overzicht</button>
+                <button id="force-snapshot-button" type="submit" class="button">Forceer Overzicht</button>
             </form>
             <h1>LIS Dashboard</h1>
         </div>
@@ -219,12 +221,12 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>ETA MPET</th> <th>Loods</th>
+                                    <th>ETA MPET</th>
+                                    <th>Loods</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
-                                
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
@@ -234,7 +236,8 @@
                                         {% endif %}
                                     </td>
                                     <td>{{ schip.Besteltijd }}</td>
-                                    <td>{{ schip.berekende_eta }}</td> <td>{{ schip.Loods }}</td>
+                                    <td>{{ schip.berekende_eta }}</td>
+                                    <td>{{ schip.Loods }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -256,7 +259,6 @@
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
-                                
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>
                                         {% if schip.GisLink %}
@@ -314,7 +316,7 @@
 
 
     <script>
-        // Auto-refresh script (onveranderd)
+        // Functie om de huidige timestamp van de pagina te lezen
         function getDisplayedTimestamp() {
             const el = document.getElementById('timestamp-display');
             if (el) {
@@ -323,6 +325,7 @@
             return null;
         }
 
+        // --- SCRIPT 1: Periodieke Auto-refresh (elke 60s) ---
         const currentTimestamp = getDisplayedTimestamp();
 
         if (currentTimestamp) {
@@ -338,18 +341,14 @@
                         console.log(`Nieuwe data gevonden (Nieuw: ${newTimestamp}, Oud: ${currentTimestamp}). Pagina wordt herladen.`);
                         location.reload();
                     }
-                    
                 } catch (error) {
                     console.error('Fout bij pollen:', error);
                 }
             }, 60000); // 60000 ms = 1 minuut
         }
-    </script>
 
-    <script>
+        // --- SCRIPT 2: Pop-up Notificatie ---
         document.addEventListener('DOMContentLoaded', () => {
-            
-            // 1. Haal de data van de laatste wijziging op
             {% if changes and changes[0] %}
                 const latestChange = {
                     timestamp: {{ changes[0].timestamp | tojson }},
@@ -357,31 +356,79 @@
                     content: {{ changes[0].content | tojson }}
                 };
                 const storageKey = 'seenChangeTimestamp';
-
-                // 2. Haal de laatst 'geziene' timestamp op
                 const seenTimestamp = localStorage.getItem(storageKey);
 
-                // 3. Vergelijk ze
                 if (latestChange.timestamp !== seenTimestamp) {
-                    // DIT IS EEN NIEUWE WIJZIGING!
-                    
-                    // 4. Vul de pop-up
                     document.getElementById('toast-header').innerText = latestChange.subject;
                     document.querySelector('#toast-body pre').innerText = latestChange.content;
-                    
-                    // 5. Toon de pop-up
                     const toast = document.getElementById('change-toast');
                     toast.style.display = 'block';
 
-                    // 6. Stel de 'close' knop in
                     document.getElementById('toast-close-btn').onclick = () => {
                         toast.style.display = 'none';
-                        // Sla op dat de gebruiker deze specifieke wijziging heeft gezien
                         localStorage.setItem(storageKey, latestChange.timestamp);
                     };
                 }
             {% endif %}
         });
+
+        // --- SCRIPT 3: NIEUWE LOGICA VOOR "FORCEER" KNOP ---
+        const forceForm = document.getElementById('force-snapshot-form');
+        const forceButton = document.getElementById('force-snapshot-button');
+        const timestampEl = document.getElementById('timestamp-display');
+        const originalTimestamp = getDisplayedTimestamp();
+
+        forceForm.addEventListener('submit', async (event) => {
+            // 1. Voorkom dat de pagina direct herlaadt
+            event.preventDefault(); 
+            
+            // 2. Toon een "loading" status
+            forceButton.disabled = true;
+            forceButton.innerText = "Bezig met vernieuwen...";
+            timestampEl.innerText = "Laatste update op: Bezig met vernieuwen...";
+
+            // 3. Roep de force-snapshot route aan op de achtergrond
+            try {
+                await fetch(forceForm.action, {
+                    method: 'POST',
+                    body: new FormData(forceForm)
+                });
+            } catch (error) {
+                console.error('Fout bij aanroepen /force-snapshot:', error);
+                forceButton.disabled = false;
+                forceButton.innerText = "Forceer Overzicht";
+                timestampEl.innerText = `Laatste update op: ${originalTimestamp} (Fout bij forceren)`;
+                return;
+            }
+
+            // 4. Start een *snelle* poller (elke 3s)
+            const fastPoll = setInterval(async () => {
+                try {
+                    const response = await fetch('/status');
+                    if (!response.ok) return;
+
+                    const data = await response.json();
+                    const newTimestamp = data.timestamp;
+
+                    // 5. Check of de timestamp is veranderd
+                    if (newTimestamp && newTimestamp !== originalTimestamp) {
+                        // JA! Herlaad de pagina
+                        clearInterval(fastPoll); // Stop deze poller
+                        console.log('Nieuwe data gevonden na forceren, pagina wordt herladen.');
+                        location.reload();
+                    }
+                } catch (e) { }
+            }, 3000); // Elke 3 seconden
+
+            // 6. Veiligheidsstop: als het langer dan 90s duurt, stop met pollen
+            setTimeout(() => {
+                clearInterval(fastPoll);
+                forceButton.disabled = false;
+                forceButton.innerText = "Forceer Overzicht";
+                timestampEl.innerText = `Laatste update op: ${originalTimestamp} (Timeout)`;
+            }, 90000); // 90 seconden
+        });
+
     </script>
 
 </body>
