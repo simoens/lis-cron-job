@@ -250,12 +250,15 @@ def filter_snapshot_schepen(bestellingen, session):
     grens_in_toekomst = nu + timedelta(hours=8)
     
     # Sorteer bestellingen op besteltijd (nieuwste eerst)
-    bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd', '01/01/70 00:00'), "%d/%m/%y %H:%M"), reverse=True)
+    # --- HIER IS DE FIX ---
+    # We gebruiken 'x.get('Besteltijd') or '...''. Dit vangt 'None' en lege strings '' op.
+    bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
 
     for b in bestellingen:
         try:
             besteltijd_str = b.get("Besteltijd")
-            if not besteltijd_str: continue
+            if not besteltijd_str: # Deze check vangt '' of None op
+                continue
             besteltijd = datetime.strptime(besteltijd_str, "%d/%m/%y %H:%M")
             
             if b.get("Type") == "U": # Uitgaand
@@ -274,6 +277,7 @@ def filter_snapshot_schepen(bestellingen, session):
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     gefilterd["INKOMEND"].append(b)
         except (ValueError, TypeError):
+            # Vangt eventuele parse-fouten op in de loop en gaat door
             continue
 
     # Sorteer de gefilterde lijsten op tijd (oudste eerst, voor weergave)
