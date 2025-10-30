@@ -85,6 +85,12 @@
             font-family: "Courier New", Courier, monospace;
             font-size: 0.9em;
         }
+        .fallback-note {
+            background-color: #fffbe6;
+            border: 1px solid #ffe58f;
+            padding: 10px;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
@@ -102,71 +108,82 @@
         <h2>Laatste Overzicht</h2>
         <p>Gegenereerd op: {{ snapshot.timestamp }}</p>
 
-        <div class="snapshot-content">
-            <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
-            
-            {% if snapshot.content_data and snapshot.content_data.INKOMEND %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Schip</th>
-                            <th>Besteltijd</th>
-                            <th>ETA Saeftinghe</th>
-                            <th>Loods</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for schip in snapshot.content_data.INKOMEND %}
-                        <tr>
-                            <td>
-                                {% if schip.GisLink %}
-                                    <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                {% else %}
-                                    {{ schip.Schip }}
-                                {% endif %}
-                            </td>
-                            <td>{{ schip.Besteltijd }}</td>
-                            <td>{{ schip.berekende_eta }}</td>
-                            <td>{{ schip.Loods }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            {% else %}
-                <p>Geen schepen die aan de criteria voldoen.</p>
-            {% endif %}
+        {% if snapshot.content_data %}
+            <div class="snapshot-content">
+                <h3>--- BINNENKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u) ---</h3>
+                
+                {% if snapshot.content_data.INKOMEND %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Schip</th>
+                                <th>Besteltijd</th>
+                                <th>ETA Saeftinghe</th>
+                                <th>Loods</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for schip in snapshot.content_data.INKOMEND %}
+                            <tr>
+                                <td>
+                                    {% if schip.GisLink %}
+                                        <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                    {% else %}
+                                        {{ schip.Schip }}
+                                    {% endif %}
+                                </td>
+                                <td>{{ schip.Besteltijd }}</td>
+                                <td>{{ schip.berekende_eta }}</td>
+                                <td>{{ schip.Loods }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>Geen schepen die aan de criteria voldoen.</p>
+                {% endif %}
 
-            <h3>--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---</h3>
-            
-            {% if snapshot.content_data and snapshot.content_data.UITGAAND %}
-                 <table>
-                    <thead>
-                        <tr>
-                            <th>Schip</th>
-                            <th>Besteltijd</th>
-                            <th>Loods</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for schip in snapshot.content_data.UITGAAND %}
-                        <tr>
-                            <td>
-                                {% if schip.GisLink %}
-                                    <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                {% else %}
-                                    {{ schip.Schip }}
-                                {% endif %}
-                            </td>
-                            <td>{{ schip.Besteltijd }}</td>
-                            <td>{{ schip.Loods }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            {% else %}
-                <p>Geen schepen die aan de criteria voldoen.</p>
-            {% endif %}
-        </div>
+                <h3>--- UITGAANDE SCHEPEN (Besteltijd binnen 16u) ---</h3>
+                
+                {% if snapshot.content_data.UITGAAND %}
+                     <table>
+                        <thead>
+                            <tr>
+                                <th>Schip</th>
+                                <th>Besteltijd</th>
+                                <th>Loods</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for schip in snapshot.content_data.UITGAAND %}
+                            <tr>
+                                <td>
+                                    {% if schip.GisLink %}
+                                        <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
+                                    {% else %}
+                                        {{ schip.Schip }}
+                                    {% endif %}
+                                </td>
+                                <td>{{ schip.Besteltijd }}</td>
+                                <td>{{ schip.Loods }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>Geen schepen die aan de criteria voldoen.</p>
+                {% endif %}
+            </div>
+        
+        {% elif snapshot.content %}
+            <div class="fallback-note">
+                <strong>Let op:</strong> Toont data in oude indeling. Druk op <strong>'Forceer Nieuw Overzicht'</strong> hierboven om de nieuwe tabelweergave met hyperlinks te laden.
+            </div>
+            <pre>{{ snapshot.content }}</pre>
+
+        {% else %}
+            <p>Wachten op de eerste run...</p>
+        {% endif %}
 
         <hr style="margin-top: 30px;">
 
