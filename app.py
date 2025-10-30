@@ -366,6 +366,7 @@ def vergelijk_bestellingen(oude, nieuwe):
             
         return rapporteer
 
+    # --- CASE 1: NIEUWE SCHEPEN ---
     for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
         n_best = nieuwe_dict[schip_naam] 
         if moet_rapporteren(n_best):
@@ -375,6 +376,7 @@ def vergelijk_bestellingen(oude, nieuwe):
                 'details': n_best 
             })
 
+    # --- CASE 2: VERWIJDERDE SCHEPEN ---
     for schip_naam in (oude_schepen_namen - nieuwe_schepen_namen):
         o_best = oude_dict[schip_naam]
         if moet_rapporteren(o_best): 
@@ -384,10 +386,18 @@ def vergelijk_bestellingen(oude, nieuwe):
                 'details': o_best
             })
 
+    # --- CASE 3: GEWIJZIGDE SCHEPEN ---
     for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
         n_best = nieuwe_dict[schip_naam] 
         o_best = oude_dict[schip_naam]
         
+        # --- START AANPASSING ---
+        # Sla over als het Type (I/U) is gewijzigd.
+        # We rapporteren alleen wijzigingen als het type hetzelfde blijft.
+        if n_best.get('Type') != o_best.get('Type'):
+            continue
+        # --- EINDE AANPASSING ---
+
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
         
         if diff:
