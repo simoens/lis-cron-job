@@ -40,27 +40,38 @@ def main_task():
 def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
     vorige_staat = load_state_from_jsonbin()
+    
+    # --- START AANPASSING ---
+    # We laden de 'change_history' data nu hier, zodat we het kunnen verwerken
+    # en doorgeven aan de template.
+    
+    recent_changes_list = []
     if vorige_staat:
         with data_lock:
-            # We zoeken naar de NIEUWE 'content_data'. 
-            # Als die niet bestaat, pakken we de OUDE 'content' als fallback.
+            # Laad snapshot data
             if "web_snapshot" in vorige_staat:
                 if "content_data" in vorige_staat["web_snapshot"]:
                     app_state["latest_snapshot"]["content_data"] = vorige_staat["web_snapshot"]["content_data"]
                 elif "content" in vorige_staat["web_snapshot"]:
-                    # Plaats oude data in een fallback-variabele
                     app_state["latest_snapshot"]["content"] = vorige_staat["web_snapshot"]["content"]
-                
                 app_state["latest_snapshot"]["timestamp"] = vorige_staat["web_snapshot"].get("timestamp", "N/A")
 
+            # Laad change history
+            recent_changes_list = vorige_staat.get("web_changes", [])
             app_state["change_history"].clear()
-            app_state["change_history"].extend(vorige_staat.get("web_changes", []))
+            app_state["change_history"].extend(recent_changes_list)
+    
+    # Maak één grote string van alle 'content' velden in de geschiedenis
+    # Dit is een simpele manier om in de template te checken of een schip erin voorkomt
+    all_change_text = " ".join([change.get('content', '') for change in recent_changes_list])
+    # --- EINDE AANPASSING ---
     
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
                                 changes=list(app_state["change_history"]),
-                                secret_key=os.environ.get('SECRET_KEY'))
+                                secret_key=os.environ.get('SECRET_KEY'),
+                                all_change_text=all_change_text) # <-- Geef de nieuwe data door
 
 @app.route('/trigger-run')
 def trigger_run():
