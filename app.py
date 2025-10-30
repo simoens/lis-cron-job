@@ -511,13 +511,15 @@ def main():
     # --- Genereer ALTIJD een snapshot ---
     logging.info("Generating new snapshot for webpage (every run).")
     brussels_tz = pytz.timezone('Europe/Brussels')
-    nu_brussels = datetime.now(brussels_tz) # <-- We hebben de correcte tijd hier al
+    nu_brussels = datetime.now(brussels_tz) # <-- We hebben de correcte tijd hier
     
-    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session)
+    # --- HIER IS DE AANPASSING ---
+    # Geef 'nu_brussels' door aan de filterfunctie
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session, nu_brussels)
     
     with data_lock:
         app_state["latest_snapshot"] = {
-            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), # <-- Correcte tijd
+            "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), 
             "content_data": snapshot_data
         }
         app_state["latest_snapshot"].pop("content", None)
@@ -532,9 +534,7 @@ def main():
             
             with data_lock:
                 app_state["change_history"].appendleft({
-                    # --- HIER IS DE FIX ---
-                    # Gebruik 'nu_brussels' i.p.v. 'datetime.now()'
-                    "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), # <-- Gecorrigeerd
+                    "timestamp": nu_brussels.strftime('%d-%m-%Y %H:%M:%S'), 
                     "onderwerp": onderwerp,
                     "content": inhoud
                 })
