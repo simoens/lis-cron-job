@@ -501,7 +501,7 @@ def main():
         
     # --- Save State for Next Run ---
     nieuwe_staat = {
-        "bestellingen": newe_bestellingen,
+        "bestellingen": nieuwe_bestellingen,
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"], # Slaat de nieuwe structuur op
         "web_changes": list(app_state["change_history"])
