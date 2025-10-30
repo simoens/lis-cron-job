@@ -247,13 +247,19 @@ def filter_snapshot_schepen(bestellingen, session):
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
     
-    # --- HIER ZIT DE CRASHFIX ---
     # Sorteer bestellingen op besteltijd (nieuwste eerst)
-    # Gebruik 'or' om lege strings '' en None op te vangen.
     bestellingen.sort(key=lambda x: datetime.strptime(x.get('Besteltijd') or '01/01/70 00:00', "%d/%m/%y %H:%M"), reverse=True)
 
     for b in bestellingen:
         try:
+            # --- START AANPASSING ---
+            # Haal Entry Point op en controleer op "Zeebrugge"
+            # De kolom 'Exit Point' wordt niet gescraped, dus we checken 'Entry Point'
+            entry_point = b.get('Entry Point', '').lower()
+            if 'zeebrugge' in entry_point:
+                continue # Sla dit schip volledig over
+            # --- EINDE AANPASSING ---
+
             besteltijd_str = b.get("Besteltijd")
             if not besteltijd_str: # Vangt '' en None op
                 continue
@@ -267,7 +273,7 @@ def filter_snapshot_schepen(bestellingen, session):
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
                     if b['berekende_eta'] == 'N/A':
-                        entry_point = b.get('Entry Point', '').lower()
+                        # 'entry_point' is hierboven al gedefinieerd
                         eta_dt = None
                         if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
                         elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
