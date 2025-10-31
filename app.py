@@ -10,26 +10,94 @@ import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
 import threading
 import time
+from flask_sqlalchemy import SQLAlchemy # <-- NIEUW
+import psycopg2 # Nodig voor de verbinding, ook al roepen we het niet direct aan
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
+# Dit is nu alleen nog een 'in-memory cache'. De database is de baas.
 app_state = {
     "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": []}}, 
     "change_history": deque(maxlen=10)
 }
 data_lock = threading.Lock() 
 
-# --- FLASK APPLICATIE ---
+# --- FLASK APPLICATIE & DATABASE OPZET ---
 app = Flask(__name__)
+# Stel de database-URL in vanuit de environment variable
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# --- DATABASE MODEL ---
+# We maken een simpele 'key-value' tabel die onze JSONbin-structuur nabootst.
+class KeyValueStore(db.Model):
+    key = db.Column(db.String(50), primary_key=True)
+    value = db.Column(db.JSON)
+
+# Zorg dat de tabellen bestaan wanneer de app start
+with app.app_context():
+    db.create_all()
+
+# --- NIEUWE DATABASE FUNCTIES (vervangen JSONbin) ---
+
+def load_state_from_db():
+    """Laadt de volledige staat van de app uit de PostgreSQL database."""
+    logging.info("State wordt geladen uit PostgreSQL...")
+    try:
+        # Haal de 4 opgeslagen 'rijen' op
+        bestellingen_obj = KeyValueStore.query.get('last_bestellingen')
+        report_key_obj = KeyValueStore.query.get('last_report_key')
+        snapshot_obj = KeyValueStore.query.get('web_snapshot')
+        changes_obj = KeyValueStore.query.get('web_changes')
+
+        # Bouw de 'vorige_staat' dictionary
+        vorige_staat = {
+            "bestellingen": bestellingen_obj.value if bestellingen_obj else [],
+            "last_report_key": report_key_obj.value if report_key_obj else "",
+            "web_snapshot": snapshot_obj.value if snapshot_obj else app_state["latest_snapshot"],
+            "web_changes": changes_obj.value if changes_obj else []
+        }
+        logging.info("State succesvol geladen uit DB.")
+        return vorige_staat
+    except Exception as e:
+        logging.error(f"Error loading state from DB: {e}")
+        # Val terug op een lege staat als de DB (nog) niet werkt
+        return {"bestellingen": [], "last_report_key": "", "web_snapshot": app_state["latest_snapshot"], "web_changes": []}
+
+def save_state_to_db(state):
+    """Slaat de dictionary 'state' op in de database."""
+    logging.info("Nieuwe state wordt opgeslagen in PostgreSQL...")
+    try:
+        # We loopen door de 4 items in de 'state' dictionary
+        for key, value in state.items():
+            # Probeer het bestaande item op te halen
+            obj = KeyValueStore.query.get(key)
+            if obj:
+                # Update de waarde als het al bestaat
+                obj.value = value
+            else:
+                # Maak een nieuw item aan als het niet bestaat
+                obj = KeyValueStore(key=key, value=value)
+                db.session.add(obj)
+        
+        # Voer de transactie uit
+        db.session.commit()
+        logging.info("New state successfully saved to DB.")
+    except Exception as e:
+        logging.error(f"Error saving state to DB: {e}")
+        db.session.rollback() # Maak de transactie ongedaan bij een fout
 
 # --- HELPER FUNCTIE VOOR ACHTERGROND TAKEN ---
 def main_task():
     """Wrapper functie om main() in een background thread te draaien."""
     try:
         logging.info("--- Background task started ---")
-        main()
+        # Belangrijk: De DB-operaties moeten binnen de 'app context' draaien
+        with app.app_context():
+            main()
         logging.info("--- Background task finished ---")
     except Exception as e:
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
@@ -37,18 +105,15 @@ def main_task():
 @app.route('/')
 def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
-    vorige_staat = load_state_from_jsonbin()
+    # Gebruik de nieuwe DB-laadfunctie
+    vorige_staat = load_state_from_db()
     
     recent_changes_list = []
     if vorige_staat:
         with data_lock:
             # Laad snapshot data
             if "web_snapshot" in vorige_staat:
-                if "content_data" in vorige_staat["web_snapshot"]:
-                    app_state["latest_snapshot"]["content_data"] = vorige_staat["web_snapshot"]["content_data"]
-                elif "content" in vorige_staat["web_snapshot"]:
-                    app_state["latest_snapshot"]["content"] = vorige_staat["web_snapshot"]["content"]
-                app_state["latest_snapshot"]["timestamp"] = vorige_staat["web_snapshot"].get("timestamp", "N/A")
+                app_state["latest_snapshot"] = vorige_staat["web_snapshot"]
 
             # Laad change history
             recent_changes_list = vorige_staat.get("web_changes", [])
@@ -64,7 +129,7 @@ def home():
 @app.route('/trigger-run')
 def trigger_run():
     """Een geheime URL endpoint die door een externe cron job wordt aangeroepen."""
-    secret = request.args.get('secret')
+    secret = request.args.get('secret') # Leest uit URL (voor curl)
     if secret != os.environ.get('SECRET_KEY'):
         logging.warning("Failed attempt to call /trigger-run with an invalid secret key.")
         abort(403)
@@ -76,12 +141,7 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    
-    # --- HIER IS DE CORRECTIE ---
-    # Het was 'request.args.get', het moet 'request.form.get' zijn.
-    secret = request.form.get('secret')
-    # --- EINDE CORRECTIE ---
-
+    secret = request.form.get('secret') # Leest uit het formulier (voor de knop)
     if secret != os.environ.get('SECRET_KEY'):
         logging.warning("Failed attempt to call /force-snapshot with an invalid secret key.")
         abort(403)
@@ -93,7 +153,8 @@ def force_snapshot_route():
 @app.route('/status')
 def status_check():
     """Een lichtgewicht endpoint die de client-side JS kan pollen."""
-    state = load_state_from_jsonbin()
+    # Gebruik de nieuwe DB-laadfunctie
+    state = load_state_from_db()
     if state and "web_snapshot" in state and "timestamp" in state["web_snapshot"]:
         return jsonify({"timestamp": state["web_snapshot"]["timestamp"]})
     else:
@@ -104,56 +165,23 @@ def status_check():
 # --- ENVIRONMENT VARIABLES ---
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
-JSONBIN_API_KEY = os.environ.get('JSONBIN_API_KEY')
-JSONBIN_BIN_ID = os.environ.get('JSONBIN_BIN_ID')
+# JSONbin variabelen zijn verwijderd
 
-# --- JSONBIN.IO FUNCTIES ---
-def load_state_from_jsonbin():
-    """Laadt de laatst opgeslagen state van een jsonbin.io bin."""
-    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return None
-    headers = {'X-Master-Key': JSONBIN_API_KEY, 'X-Bin-Meta': 'false'}
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        res.raise_for_status()
-        logging.info("State successfully loaded from jsonbin.io.")
-        return res.json()
-    except Exception as e:
-        logging.error(f"Error loading state from jsonbin.io: {e}")
-        return None
-
-def save_state_to_jsonbin(state):
-    """Slaat de huidige state op in een jsonbin.io bin."""
-    if not all([JSONBIN_API_KEY, JSONBIN_BIN_ID]): return
-    headers = {'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY}
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
-    try:
-        res = requests.put(url, headers=headers, data=json.dumps(state), timeout=15)
-        res.raise_for_status()
-        logging.info("New state successfully saved to jsonbin.io.")
-    except Exception as e:
-        logging.error(f"Error saving state to jsonbin.io: {e}")
-
-# --- NIEUWE HELPER: ROBUUSTE DATUM PARSER ---
+# --- HELPER: ROBUUSTE DATUM PARSER ---
 def parse_besteltijd(besteltijd_str):
     """Probeert een besteltijd-string te parsen. 
     Geeft een geldig datetime-object terug, of epoch (1970) bij een fout."""
-    DEFAULT_TIME = datetime(1970, 1, 1) # Standaard 'vroegste' tijd
+    DEFAULT_TIME = datetime(1970, 1, 1) 
     
     if not besteltijd_str:
         return DEFAULT_TIME
         
     try:
-        # 1. Maak de string schoon (vervang U+00A0, etc. met een gewone spatie)
         cleaned_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
-        # 2. Probeer het te parsen
         return datetime.strptime(cleaned_str, "%d/%m/%y %H:%M")
     except ValueError:
-        # 3. Bij een fout (bv. 'Sluisplanning'), geef de default tijd terug
         logging.warning(f"Kon besteltijd '{besteltijd_str}' niet parsen (bv. 'Sluisplanning'). Wordt genegeerd in sortering.")
         return DEFAULT_TIME
-# --- EINDE NIEUWE HELPER ---
-
 
 # --- SCRAPER FUNCTIES ---
 def login(session):
@@ -191,7 +219,7 @@ def login(session):
 
 def haal_bestellingen_op(session):
     """Haalt de lijst met loodsbestellingen op van de website."""
-    logging.info("--- Running haal_bestellingen_op (v7, Sluisplanning-Fix) ---")
+    logging.info("--- Running haal_bestellingen_op (v8, Zeebrugge-Fix) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         response = session.get(base_page_url)
@@ -203,9 +231,7 @@ def haal_bestellingen_op(session):
             logging.warning("De bestellingentabel werd niet gevonden.")
             return []
         
-        # --- HIER IS DE AANPASSING ---
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
-        # --- EINDE AANPASSING ---
 
         bestellingen = []
         
@@ -259,7 +285,6 @@ def haal_pta_van_reisplan(session, reis_id):
         
         if laatste_pta_gevonden:
             try:
-                # Maak de string schoon (vervang U+00A0)
                 pta_schoon = re.sub(r'\s+', ' ', laatste_pta_gevonden.strip())
                 dt_obj = datetime.strptime(pta_schoon, '%d-%m %H:%M')
                 
@@ -281,7 +306,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     gefilterd = {"INKOMEND": [], "UITGAAND": []}
     
-    brussels_tz = pytz.timezone('Europe/Brussels') # We hebben de timezone nodig
+    brussels_tz = pytz.timezone('Europe/Brussels') 
     
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
@@ -291,12 +316,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
     for b in bestellingen:
         try:
-            # --- HIER IS DE AANPASSING ---
             entry_point = b.get('Entry Point', '').lower()
             exit_point = b.get('Exit Point', '').lower()
             if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
                 continue 
-            # --- EINDE AANPASSING ---
             
             besteltijd_str_raw = b.get("Besteltijd")
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
@@ -324,7 +347,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     gefilterd["INKOMEND"].append(b)
                     
         except (ValueError, TypeError) as e:
-            # Vangt de 'aware vs naive' TypeError op
             logging.warning(f"Fout bij verwerken van '{besteltijd_str_raw}' (Fout: {e}). Schip wordt overgeslagen.", exc_info=False)
             continue
 
@@ -345,7 +367,6 @@ def filter_dubbele_schepen(bestellingen):
         
         if schip_naam_gekuist in unieke_schepen:
             try:
-                # Gebruik de veilige parser
                 huidige_tijd = parse_besteltijd(b.get("Besteltijd"))
                 opgeslagen_tijd = parse_besteltijd(unieke_schepen[schip_naam_gekuist].get("Besteltijd"))
                 
@@ -370,7 +391,7 @@ def vergelijk_bestellingen(oude, nieuwe):
     nieuwe_schepen_namen = set(nieuwe_dict.keys())
 
     wijzigingen = []
-    nu_brussels = datetime.now(pytz.timezone('Europe/Brussels')) # Gebruik Brusselse tijd
+    nu_brussels = datetime.now(pytz.timezone('Europe/Brussels')) 
     brussels_tz = pytz.timezone('Europe/Brussels')
     
     def moet_rapporteren(bestelling):
@@ -396,12 +417,10 @@ def vergelijk_bestellingen(oude, nieuwe):
             logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
             return False
 
-        # --- HIER IS DE AANPASSING ---
         entry_point = bestelling.get('Entry Point', '').lower()
         exit_point = bestelling.get('Exit Point', '').lower()
         if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
             rapporteer = False
-        # --- EINDE AANPASSING ---
             
         return rapporteer
 
@@ -488,26 +507,19 @@ def format_wijzigingen_email(wijzigingen):
 
 def main():
     """De hoofdfunctie van de scraper, uitgevoerd door de cron job trigger."""
-    if not all([USER, PASS, JSONBIN_API_KEY, JSONBIN_BIN_ID]):
-        logging.critical("FATAL ERROR: Essential Environment Variables are not set!")
+    # Check nu alleen de essentiële login variabelen
+    if not all([USER, PASS]):
+        logging.critical("FATAL ERROR: LIS_USER en LIS_PASS zijn niet ingesteld!")
         return
     
-    vorige_staat = load_state_from_jsonbin()
-    if vorige_staat is None:
-        logging.warning("No previous state found in jsonbin, starting fresh.")
-        vorige_staat = {"bestellingen": [], "last_report_key": "", "web_snapshot": {}, "web_changes": []}
+    # Gebruik de nieuwe DB-laadfunctie
+    vorige_staat = load_state_from_db()
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     last_report_key = vorige_staat.get("last_report_key", "")
     
     with data_lock:
-        if "web_snapshot" in vorige_staat:
-            if "content_data" in vorige_staat["web_snapshot"]:
-                app_state["latest_snapshot"]["content_data"] = vorige_staat["web_snapshot"]["content_data"]
-            elif "content" in vorige_staat["web_snapshot"]:
-                app_state["latest_snapshot"]["content"] = vorige_staat["web_snapshot"]["content"]
-            app_state["latest_snapshot"]["timestamp"] = vorige_staat["web_snapshot"].get("timestamp", "N/A")
-        
+        app_state["latest_snapshot"] = vorige_staat.get("web_snapshot", app_state["latest_snapshot"])
         app_state["change_history"].clear()
         app_state["change_history"].extend(vorige_staat.get("web_changes", []))
     
@@ -570,14 +582,17 @@ def main():
             last_report_key = current_key
         
     # --- Save State for Next Run ---
+    # Sla de 4 items op in de database
     nieuwe_staat = {
         "bestellingen": nieuwe_bestellingen, 
         "last_report_key": last_report_key,
         "web_snapshot": app_state["latest_snapshot"],
         "web_changes": list(app_state["change_history"])
     }
-    save_state_to_jsonbin(nieuwe_staat)
-    logging.info("--- Run Completed, state saved to jsonbin. ---")
+    # Gebruik de nieuwe DB-opslagfunctie
+    save_state_to_db(nieuwe_staat)
+    
+    logging.info("--- Run Completed, state saved to DB. ---")
 
 # if __name__ == '__main__':
 #     app.run(debug=True, port=5001)
