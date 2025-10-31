@@ -624,24 +624,24 @@ def format_wijzigingen_email(wijzigingen):
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
         
         elif status == 'GEWIJZIGD':
-            # --- START AANPASSING ---
-            # Verwijder '*** GEWIJZIGD: '
             tekst = f"'{s_naam}'\n"
-            # --- EINDE AANPASSING ---
             
+            # --- START AANPASSING: Compactere tekst ---
             relevante_diffs = []
             for k, v in w['wijzigingen'].items():
                 if k == 'Loods':
                     if v['nieuw'] and not v['oud']:
-                        relevante_diffs.append(f" - LOODS TOEGEWEZEN: '{v['nieuw']}'")
+                        relevante_diffs.append(f" - LOODS TOEGEWEZEN")
                     elif not v['nieuw'] and v['oud']:
-                        relevante_diffs.append(f" - LOODS VERWIJDERD (was '{v['oud']}')")
+                        relevante_diffs.append(f" - LOODS VERWIJDERD")
                     else:
+                        # Fallback voor een complexe wijziging (bv. Loods A -> Loods B)
                         relevante_diffs.append(f" - Loods: '{v['oud']}' -> '{v['nieuw']}'")
                 elif k == 'Besteltijd':
                     relevante_diffs.append(f" - Besteltijd: '{v['oud']}' -> '{v['nieuw']}'")
             
             tekst += "\n".join(relevante_diffs)
+            # --- EINDE AANPASSING ---
         
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
@@ -650,6 +650,7 @@ def format_wijzigingen_email(wijzigingen):
 
         body.append(tekst)
     
+    # Filter lege strings eruit (kan gebeuren als een 'GEWIJZIGD' nu geen relevante data meer heeft)
     return "\n\n".join(filter(None, body))
 
 def main():
