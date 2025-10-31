@@ -86,7 +86,6 @@
             padding: 10px 30px 30px 30px;
         }
 
-        /* --- START WIJZIGING --- */
         /* Sectie headers met geel accent */
         h2 {
             font-size: 1.4em;
@@ -113,9 +112,8 @@
             text-transform: uppercase;
             letter-spacing: 1.5px;
         }
-        /* --- EINDE WIJZIGING --- */
         
-        /* Tabellen */
+        /* VASTE TABELINDELING */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -394,7 +392,7 @@
                 {% for change in changes %}
                     <div class="change-item">
                         <div class="change-header">
-                            [{{ change.timestamp }}] : {{ change.onderwerp }}
+                            [{{ change.timestamp }}] - {{ change.onderwerp }}
                         </div>
                         <pre>{{ change.content }}</pre>
                     </div>
