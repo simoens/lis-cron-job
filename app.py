@@ -654,7 +654,6 @@ def main():
     vorige_staat = load_state_for_comparison()
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
-    # 'last_report_key' is hier verwijderd
     
     session = requests.Session()
     if not login(session):
@@ -662,7 +661,7 @@ def main():
         return
     
     nieuwe_bestellingen = haal_bestellingen_op(session) 
-    if not nieuwe_bestellingen:
+    if not newe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
 
@@ -683,7 +682,12 @@ def main():
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
             inhoud = format_wijzigingen_email(wijzigingen)
-            onderwerp = f"LIS Update: {len(wijzigingen)} wijziging(en)"
+            
+            # --- START AANPASSING ---
+            # Verwijder "LIS Update: "
+            onderwerp = f"{len(wijzigingen)} wijziging(en)"
+            # --- EINDE AANPASSING ---
+            
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
             
             new_change_entry = DetectedChange(
@@ -697,14 +701,10 @@ def main():
             logging.info("No relevant changes found.")
     else:
         logging.info("First run, establishing baseline.")
-    
-    # --- HET 'SCHEDULED REPORTING' BLOK IS HIER VOLLEDIG VERWIJDERD ---
         
     # --- Save State for Next Run ---
-    # Sla alleen de data op die nodig is voor de *volgende* vergelijking
     state_for_comparison = {
         "bestellingen": nieuwe_bestellingen
-        # 'last_report_key' is hier verwijderd
     }
     save_state_for_comparison(state_for_comparison)
     
