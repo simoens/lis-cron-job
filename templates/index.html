@@ -39,6 +39,10 @@
             font-size: 1.8em;
             float: left;
         }
+        .header-bar a {
+            color: white;
+            text-decoration: none;
+        }
         .button {
             float: right;
             background-color: #f0c14b; /* Gele knop */
@@ -55,7 +59,6 @@
         .button:hover {
             background-color: #5a6268;
         }
-        /* Stijl voor als de knop 'disabled' is */
         .button:disabled {
             background-color: #6c757d;
             cursor: not-allowed;
@@ -193,9 +196,10 @@
 </head>
 <body>
 
+    <div class="container">
+        
         <div class="header-bar">
             <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Statistieken</a>
-
             <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Logboek</a>
             
             <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
@@ -316,6 +320,8 @@
         </div>
     </div>
 
+    <audio id="notification-sound" src="https://actions.google.com/sounds/v1/basic_sounds/bell_tink.ogg" preload="auto"></audio>
+
 
     <script>
         // Functie om de huidige timestamp van de pagina te lezen
@@ -361,11 +367,19 @@
                 const seenTimestamp = localStorage.getItem(storageKey);
 
                 if (latestChange.timestamp !== seenTimestamp) {
+                    // Vul de pop-up
                     document.getElementById('toast-header').innerText = latestChange.subject;
                     document.querySelector('#toast-body pre').innerText = latestChange.content;
+                    
+                    // Toon de pop-up
                     const toast = document.getElementById('change-toast');
                     toast.style.display = 'block';
 
+                    // Speel het geluid af
+                    const sound = document.getElementById('notification-sound');
+                    sound.play().catch(e => console.warn("Audio kon niet automatisch afspelen:", e));
+
+                    // Stel de 'close' knop in
                     document.getElementById('toast-close-btn').onclick = () => {
                         toast.style.display = 'none';
                         localStorage.setItem(storageKey, latestChange.timestamp);
@@ -374,22 +388,18 @@
             {% endif %}
         });
 
-        // --- SCRIPT 3: NIEUWE LOGICA VOOR "FORCEER" KNOP ---
+        // --- SCRIPT 3: LOGICA VOOR "FORCEER" KNOP ---
         const forceForm = document.getElementById('force-snapshot-form');
         const forceButton = document.getElementById('force-snapshot-button');
         const timestampEl = document.getElementById('timestamp-display');
         const originalTimestamp = getDisplayedTimestamp();
 
         forceForm.addEventListener('submit', async (event) => {
-            // 1. Voorkom dat de pagina direct herlaadt
             event.preventDefault(); 
-            
-            // 2. Toon een "loading" status
             forceButton.disabled = true;
-            forceButton.innerText = "Bezig met vernieuwen...";
+            forceButton.innerText = "Bezig...";
             timestampEl.innerText = "Laatste update op: Bezig met vernieuwen...";
 
-            // 3. Roep de force-snapshot route aan op de achtergrond
             try {
                 await fetch(forceForm.action, {
                     method: 'POST',
@@ -403,7 +413,6 @@
                 return;
             }
 
-            // 4. Start een *snelle* poller (elke 3s)
             const fastPoll = setInterval(async () => {
                 try {
                     const response = await fetch('/status');
@@ -412,25 +421,21 @@
                     const data = await response.json();
                     const newTimestamp = data.timestamp;
 
-                    // 5. Check of de timestamp is veranderd
                     if (newTimestamp && newTimestamp !== originalTimestamp) {
-                        // JA! Herlaad de pagina
-                        clearInterval(fastPoll); // Stop deze poller
+                        clearInterval(fastPoll);
                         console.log('Nieuwe data gevonden na forceren, pagina wordt herladen.');
                         location.reload();
                     }
                 } catch (e) { }
-            }, 3000); // Elke 3 seconden
+            }, 3000); 
 
-            // 6. Veiligheidsstop: als het langer dan 90s duurt, stop met pollen
             setTimeout(() => {
                 clearInterval(fastPoll);
                 forceButton.disabled = false;
                 forceButton.innerText = "Forceer Overzicht";
                 timestampEl.innerText = `Laatste update op: ${originalTimestamp} (Timeout)`;
-            }, 90000); // 90 seconden
+            }, 90000); 
         });
-
     </script>
 
 </body>
