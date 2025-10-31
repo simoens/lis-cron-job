@@ -102,19 +102,23 @@
             border-radius: 5px; /* Afgeronde hoeken */
         }
         
-        /* Tabellen */
+        /* === WIJZIGING 1: VASTE TABELINDELING === */
         table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 15px;
             font-size: 0.9em;
+            table-layout: fixed; /* Dwingt de tabel om de <th> breedtes te respecteren */
         }
         th, td {
             border: 1px solid #ddd;
             padding: 10px;
             text-align: left;
             transition: background-color 0.3s ease;
+            word-wrap: break-word; /* Zorgt dat lange tekst afbreekt */
         }
+        /* === EINDE WIJZIGING 1 === */
+
         th {
             background-color: #f2f2f2;
         }
@@ -130,23 +134,16 @@
             text-decoration: underline;
         }
         
-        /* Groene achtergrond voor toegewezen loods */
+        /* Kleuren voor status */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
             background-color: #dff0d8; /* Zachtgroen */
             font-weight: 500; 
         }
-
-        /* === WIJZIGING 1: ANIMATIE TOEGEVOEGD === */
-        /* Oranje voor <1u in toekomst (zonder loods) */
         tr.status-due-soon, tr.status-due-soon:nth-child(even) {
             background-color: #fff3e0; /* Zachtoranje */
             font-weight: 500;
-            /* Pas de "pulse-orange" animatie toe: 4s duur, soepel, oneindig */
             animation: pulse-orange 4s ease-in-out infinite; 
         }
-        /* === EINDE WIJZIGING 1 === */
-
-        /* Rood voor verleden (zonder loods) */
         tr.status-past-due, tr.status-past-due:nth-child(even) {
             background-color: #ffebee; /* Zachtrood */
             font-weight: 500;
@@ -225,8 +222,7 @@
             color: #000;
         }
 
-        /* === WIJZIGING 2: @keyframes REGEL TOEGEVOEGD === */
-        /* Definieert de "adem" animatie */
+        /* Animatie voor oranje rijen */
         @keyframes pulse-orange {
           0% {
             background-color: #fff3e0; /* Begin (zachtoranje) */
@@ -238,8 +234,6 @@
             background-color: #fff3e0; /* Terug naar begin */
           }
         }
-        /* === EINDE WIJZIGING 2 === */
-
     </style>
 </head>
 <body>
@@ -279,11 +273,11 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th>SCHIP</th>
-                                    <th>BESTELTIJD</th>
-                                    <th>LOODS</th>
-                                    <th>ETA MPET</th>
-                                </tr>
+                                    <th style="width: 40%;">SCHIP</th>
+                                    <th style="width: 20%;">BESTELTIJD</th>
+                                    <th style="width: 20%;">LOODS</th>
+                                    <th style="width: 20%;">ETA MPET</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
@@ -311,10 +305,11 @@
                          <table>
                             <thead>
                                 <tr>
-                                    <th>SCHIP</th>
-                                    <th>BESTELTIJD</th>
-                                    <th>LOODS</th>
-                                </tr>
+                                    <th style="width: 40%;">SCHIP</th>
+                                    <th style="width: 20%;">BESTELTIJD</th>
+                                    <th style="width: 20%;">LOODS</th>
+                                    <th style="width: 20%;">BESTEMMING</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
@@ -327,7 +322,8 @@
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
-                                </tr>
+                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
+                                    </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
@@ -341,11 +337,11 @@
                          <table>
                             <thead>
                                 <tr>
-                                    <th>SCHIP</th>
-                                    <th>BESTELTIJD</th>
-                                    <th>LOODS</th>
-                                    <th>BESTEMMING</th>
-                                </tr>
+                                    <th style="width: 40%;">SCHIP</th>
+                                    <th style="width: 20%;">BESTELTIJD</th>
+                                    <th style="width: 20%;">LOODS</th>
+                                    <th style="width: 20%;">BESTEMMING</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.VERPLAATSING %}
@@ -400,7 +396,7 @@
 
     <div id="change-toast" class="toast-notification">
         <span id="toast-close-btn" class="toast-close">&times;</span>
-        <div id="toast-header" class="toast-header"></div>
+        <div id="toast-header" classA="toast-header"></div>
         <div id="toast-body" class="toast-body">
             <pre></pre>
         </div>
