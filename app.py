@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import re
 import os
 import json 
-from collections import deque
+from collections import deque, Counter
 import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
 import threading
@@ -107,6 +107,61 @@ def main_task():
         logging.info("--- Background task finished ---")
     except Exception as e:
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
+
+@app.route('/statistieken')
+def statistieken():
+    """Toont een overzichtspagina met statistieken van de afgelopen 7 dagen."""
+    
+    # Bepaal de datumgrens (7 dagen geleden)
+    seven_days_ago_utc = datetime.utcnow() - timedelta(days=7)
+    
+    # --- Stat 1: Totaal aantal wijzigingen (eenvoudige query) ---
+    total_changes = DetectedChange.query.filter(
+        DetectedChange.timestamp >= seven_days_ago_utc
+    ).count()
+
+    # --- Stat 2: Totaal aantal schepen in snapshots ---
+    snapshots = Snapshot.query.filter(
+        Snapshot.timestamp >= seven_days_ago_utc
+    ).all()
+    
+    total_incoming = 0
+    total_outgoing = 0
+    if snapshots:
+        # We pakken de data van de *meest recente* snapshot als representatief
+        # (Elke snapshot tellen zou schepen dubbel tellen)
+        latest_snapshot_data = snapshots[-1].content_data
+        total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
+        total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
+        
+    # --- Stat 3: Meest gewijzigde schepen ---
+    changes = DetectedChange.query.filter(
+        DetectedChange.timestamp >= seven_days_ago_utc
+    ).all()
+    
+    ship_counter = Counter()
+    # Zoek naar 'NIEUW SCHIP: 'Scheepsnaam'', 'GEWIJZIGD: 'Scheepsnaam'', etc.
+    ship_regex = re.compile(r"(?:NIEUW SCHIP|GEWIJZIGD|VERWIJDERD): '([^']+)'")
+    
+    for change in changes:
+        if change.content:
+            ship_names = ship_regex.findall(change.content)
+            for name in ship_names:
+                ship_counter[name] += 1
+                
+    top_ships = ship_counter.most_common(5) # Pak de top 5
+
+    # Bundel alle statistieken
+    stats = {
+        "total_changes": total_changes,
+        "total_incoming": total_incoming,
+        "total_outgoing": total_outgoing,
+        "top_ships": top_ships
+    }
+    
+    return render_template('statistieken.html', 
+                            stats=stats,
+                            secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/logboek')
 def logboek():
