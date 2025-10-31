@@ -46,12 +46,12 @@
         
         .header-buttons {
             float: right;
-            display: flex; /* Gebruik flexbox voor perfecte uitlijning */
-            gap: 10px; /* Ruimte tussen de knoppen */
-            align-items: center; /* Lijn ze verticaal in het midden uit */
+            display: flex;
+            gap: 10px;
+            align-items: center;
         }
         .header-buttons form {
-            margin: 0; /* Verwijder default form margin */
+            margin: 0;
         }
         
         .button {
@@ -130,11 +130,23 @@
             text-decoration: underline;
         }
         
+        /* --- START AANPASSING: NIEUWE KLEUREN --- */
         /* Groene achtergrond voor toegewezen loods */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
-            background-color: #dff0d8; /* Lichtgroen */
+            background-color: #dff0d8; /* Zachtgroen */
             font-weight: 500; 
         }
+        /* Oranje voor <1u in toekomst (zonder loods) */
+        tr.status-due-soon, tr.status-due-soon:nth-child(even) {
+            background-color: #fff3e0; /* Zachtoranje */
+            font-weight: 500;
+        }
+        /* Rood voor verleden (zonder loods) */
+        tr.status-past-due, tr.status-past-due:nth-child(even) {
+            background-color: #ffebee; /* Zachtrood */
+            font-weight: 500;
+        }
+        /* --- EINDE AANPASSING --- */
         
         /* Wijzigingen */
         .change-item {
@@ -251,12 +263,17 @@
                                     <th>BESTELTIJD</th>
                                     <th>LOODS</th>
                                     <th>ETA MPET</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
-                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>{{ schip.Schip }}</td>
+                                <tr class="
+                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'due_soon' %}status-due-soon
+                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% endif %}
+                                ">
+                                <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.berekende_eta }}</td>
@@ -277,12 +294,17 @@
                                     <th>SCHIP</th>
                                     <th>BESTELTIJD</th>
                                     <th>LOODS</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
-                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>{{ schip.Schip }}</td>
+                                <tr class="
+                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'due_soon' %}status-due-soon
+                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% endif %}
+                                ">
+                                <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                 </tr>
@@ -303,12 +325,17 @@
                                     <th>BESTELTIJD</th>
                                     <th>LOODS</th>
                                     <th>BESTEMMING</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.VERPLAATSING %}
-                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>{{ schip.Schip }}</td>
+                                <tr class="
+                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'due_soon' %}status-due-soon
+                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% endif %}
+                                ">
+                                <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.get('Exit Point', 'N/A') }}</td>
