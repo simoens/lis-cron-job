@@ -108,6 +108,36 @@ def main_task():
     except Exception as e:
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
+@app.route('/logboek')
+def logboek():
+    """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
+    
+    # Haal de zoekterm uit de URL (bv. /logboek?q=MSC)
+    search_term = request.args.get('q', '')
+    
+    query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
+    
+    if search_term:
+        # Filter de 'content' kolom. 'ilike' betekent 'case-insensitive'
+        query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
+    
+    # Haal alle resultaten op (max 100 voor de veiligheid)
+    changes_db_objects = query.limit(100).all()
+    
+    # Converteer de DB objecten naar dictionaries, net als op de homepage
+    formatted_changes = []
+    for change in changes_db_objects:
+        formatted_changes.append({
+            "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+            "onderwerp": change.onderwerp,
+            "content": change.content
+        })
+
+    return render_template('logboek.html', 
+                            changes=formatted_changes, 
+                            search_term=search_term,
+                            secret_key=os.environ.get('SECRET_KEY'))
+
 @app.route('/')
 def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
