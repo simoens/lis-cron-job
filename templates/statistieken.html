@@ -59,12 +59,20 @@
             margin-top: 25px;
             margin-bottom: 20px;
         }
+        h3 {
+            margin-top: 25px;
+            font-size: 1.1em;
+            color: #555;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
         
         /* Stijlen voor statistiek-kaarten */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
+            margin-bottom: 30px; /* Ruimte voor de nieuwe tabellen */
         }
         .stat-card {
             background-color: #fdfdfd;
@@ -72,13 +80,6 @@
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.03);
-        }
-        .stat-card h3 {
-            margin-top: 0;
-            font-size: 1.1em;
-            color: #555;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 5px;
         }
         .stat-card .value {
             font-size: 2.5em;
@@ -97,6 +98,30 @@
             font-size: 1em;
             margin-bottom: 5px;
         }
+
+        /* Stijlen voor de nieuwe tabellen */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            font-size: 0.9em;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        /* Markeer data in het verleden */
+        .in-past {
+            color: #999;
+            text-decoration: line-through;
+        }
     </style>
 </head>
 <body>
@@ -104,8 +129,8 @@
     <div class="container">
         
         <div class="header-bar">
+            <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Logboek</a>
             <a href="{{ url_for('home') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Terug naar Dashboard</a>
-            
             <a href="{{ url_for('home') }}"><h1>LIS Dashboard</h1></a>
         </div>
 
@@ -140,8 +165,62 @@
                         <p>Geen wijzigingen gevonden.</p>
                     {% endif %}
                 </div>
-
             </div>
+
+            <hr>
+
+            <h3>Vervroegde Besteltijden (Uitgaand)</h3>
+            {% if stats.vervroegd %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Schip</th>
+                            <th>Eerste Tijd</th>
+                            <th>Laatste Tijd</th>
+                            <th>Delta (Vervroegd)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in stats.vervroegd %}
+                            <tr class="{% if item.is_in_verleden %}in-past{% endif %}">
+                                <td>{{ item.ship_name }}</td>
+                                <td>{{ item.eerste_tijd }}</td>
+                                <td>{{ item.laatste_tijd }}</td>
+                                <td>{{ item.delta_str }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Geen vervroegde schepen gevonden.</p>
+            {% endif %}
+
+            <h3>Vertraagde Besteltijden (Uitgaand)</h3>
+            {% if stats.vertraagd %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Schip</th>
+                            <th>Eerste Tijd</th>
+                            <th>Laatste Tijd</th>
+                            <th>Delta (Vertraagd)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in stats.vertraagd %}
+                            <tr class="{% if item.is_in_verleden %}in-past{% endif %}">
+                                <td>{{ item.ship_name }}</td>
+                                <td>{{ item.eerste_tijd }}</td>
+                                <td>{{ item.laatste_tijd }}</td>
+                                <td>{{ item.delta_str }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Geen vertraagde schepen gevonden.</p>
+            {% endif %}
+
         </div>
     </div>
 
