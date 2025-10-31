@@ -116,51 +116,138 @@ def main_task():
 def statistieken():
     """Toont een overzichtspagina met statistieken van de afgelopen 7 dagen."""
     
-    # Bepaal de datumgrens (7 dagen geleden)
-    seven_days_ago_utc = datetime.utcnow() - timedelta(days=7)
+    brussels_tz = pytz.timezone('Europe/Brussels')
+    nu_brussels = datetime.now(brussels_tz)
+    seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
-    # --- Stat 1: Totaal aantal wijzigingen (eenvoudige query) ---
-    total_changes = DetectedChange.query.filter(
+    # --- Haal alle benodigde data op ---
+    changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
-    ).count()
+    ).order_by(DetectedChange.timestamp.asc()).all() # Belangrijk: haal op in OUDE volgorde
 
-    # --- Stat 2: Totaal aantal schepen in snapshots ---
     snapshots = Snapshot.query.filter(
         Snapshot.timestamp >= seven_days_ago_utc
     ).all()
-    
+
+    # --- Stat 1: Totaal Wijzigingen ---
+    total_changes = len(changes)
+
+    # --- Stat 2: Huidige Snapshot data ---
     total_incoming = 0
     total_outgoing = 0
     if snapshots:
-        # We pakken de data van de *meest recente* snapshot als representatief
-        # (Elke snapshot tellen zou schepen dubbel tellen)
         latest_snapshot_data = snapshots[-1].content_data
         total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
         
-    # --- Stat 3: Meest gewijzigde schepen ---
-    changes = DetectedChange.query.filter(
-        DetectedChange.timestamp >= seven_days_ago_utc
-    ).all()
-    
+    # --- Stat 3: Top 5 Gewijzigde Schepen (Bestaande logica) ---
     ship_counter = Counter()
-    # Zoek naar 'NIEUW SCHIP: 'Scheepsnaam'', 'GEWIJZIGD: 'Scheepsnaam'', etc.
     ship_regex = re.compile(r"(?:NIEUW SCHIP|GEWIJZIGD|VERWIJDERD): '([^']+)'")
-    
     for change in changes:
         if change.content:
             ship_names = ship_regex.findall(change.content)
             for name in ship_names:
-                ship_counter[name] += 1
-                
-    top_ships = ship_counter.most_common(5) # Pak de top 5
+                ship_counter[name.strip()] += 1
+    top_ships = ship_counter.most_common(5)
 
-    # Bundel alle statistieken
+    # --- NIEUWE LOGICA: Analyseer Besteltijd Wijzigingen (Uitgaand) ---
+    
+    # Regex om de 'Besteltijd' wijziging te vinden
+    besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
+    
+    # Dictionaries om de eerste, laatste en alle tijden per schip bij te houden
+    ship_times = {} # Slaat alle tijden op
+    ship_first_time = {} # Slaat de allereerste tijd op
+    ship_final_time = {} # Slaat de allerlaatste tijd op
+
+    for change in changes:
+        # Zoek eerst de scheepsnaam in de 'onderwerp' regel
+        if "GEWIJZIGD" not in change.onderwerp:
+            continue
+            
+        ship_name_match = re.search(r"GEWIJZIGD: '([^']+)'", change.content)
+        if not ship_name_match:
+            continue
+            
+        ship_name = ship_name_match.group(1).strip()
+
+        # Zoek nu naar een 'Besteltijd' wijziging
+        besteltijd_match = besteltijd_regex.search(change.content)
+        if not besteltijd_match:
+            continue
+            
+        # We hebben een Besteltijd-wijziging gevonden!
+        oud_tijd_str = besteltijd_match.group(1)
+        nieuw_tijd_str = besteltijd_match.group(2)
+
+        # We kunnen alleen 'Uitgaande' schepen controleren (want 'Inkomende' filteren we)
+        # Dit is een simpele check; we kunnen later 'Type' aan de DB toevoegen
+        
+        try:
+            oud_tijd = parse_besteltijd(oud_tijd_str)
+            nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
+            
+            if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
+                continue # Ongeldige data
+
+            # Initialiseer de lijsten voor dit schip
+            if ship_name not in ship_times:
+                ship_times[ship_name] = []
+                ship_first_time[ship_name] = oud_tijd
+            
+            # Voeg de tijden toe
+            ship_times[ship_name].append(oud_tijd)
+            ship_times[ship_name].append(nieuw_tijd)
+            ship_final_time[ship_name] = nieuw_tijd # Update altijd naar de laatste
+            
+        except Exception:
+            continue # Sla fouten bij parsen over
+
+    # Nu verwerken we de resultaten
+    vervroegd_lijst = []
+    vertraagd_lijst = []
+
+    for ship_name in ship_times:
+        eerste_tijd = ship_first_time[ship_name]
+        laatste_tijd = ship_final_time[ship_name]
+        
+        delta_seconds = (laatste_tijd - eerste_tijd).total_seconds()
+        
+        # Sla alleen op als er daadwerkelijk een wijziging is
+        if delta_seconds == 0:
+            continue
+            
+        # Converteer delta naar uren/minuten
+        hours, remainder = divmod(abs(delta_seconds), 3600)
+        minutes, _ = divmod(remainder, 60)
+        delta_str = f"{int(hours)}u {int(minutes)}m"
+
+        # Maak een 'resultaat' object
+        result_data = {
+            "ship_name": ship_name,
+            "eerste_tijd": eerste_tijd.strftime('%d/%m %H:%M'),
+            "laatste_tijd": laatste_tijd.strftime('%d/%m %H:%M'),
+            "delta_str": delta_str
+        }
+
+        # Check of de *finale* tijd al in het verleden ligt
+        is_in_verleden = brussels_tz.localize(laatste_tijd) < nu_brussels
+        
+        if delta_seconds > 0: # Positief = vertraagd (later)
+            result_data["is_in_verleden"] = is_in_verleden
+            vertraagd_lijst.append(result_data)
+        else: # Negatief = vervroegd (eerder)
+            result_data["is_in_verleden"] = is_in_verleden
+            vervroegd_lijst.append(result_data)
+
+    # --- Bundel alle statistieken ---
     stats = {
         "total_changes": total_changes,
         "total_incoming": total_incoming,
         "total_outgoing": total_outgoing,
-        "top_ships": top_ships
+        "top_ships": top_ships,
+        "vervroegd": vervroegd_lijst, # Nieuwe data
+        "vertraagd": vertraagd_lijst  # Nieuwe data
     }
     
     return render_template('statistieken.html', 
