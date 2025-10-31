@@ -62,7 +62,11 @@ def load_state_for_comparison():
     """Laadt alleen de data die nodig is voor de *volgende* run."""
     logging.info("Oude staat (voor vergelijking) wordt geladen uit PostgreSQL...")
     try:
-        bestellingen_obj = KeyValueStore.query.get('last_bestellingen')
+        # --- HIER IS DE FIX ---
+        # Het was 'last_bestellingen', het moet 'bestellingen' zijn.
+        bestellingen_obj = KeyValueStore.query.get('bestellingen')
+        # --- EINDE FIX ---
+        
         report_key_obj = KeyValueStore.query.get('last_report_key')
 
         vorige_staat = {
