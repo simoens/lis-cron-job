@@ -53,33 +53,35 @@ def load_state_for_comparison():
     """Laadt alleen de data die nodig is voor de *volgende* run."""
     logging.info("Oude staat (voor vergelijking) wordt geladen uit PostgreSQL...")
     try:
-        bestellingen_obj = KeyValueStore.query.get('bestellingen') # Gecorrigeerde sleutel
-        report_key_obj = KeyValueStore.query.get('last_report_key')
-
+        bestellingen_obj = KeyValueStore.query.get('bestellingen')
+        
+        # 'last_report_key' is hier verwijderd
         vorige_staat = {
-            "bestellingen": bestellingen_obj.value if bestellingen_obj else [],
-            "last_report_key": report_key_obj.value if report_key_obj else ""
+            "bestellingen": bestellingen_obj.value if bestellingen_obj else []
         }
         return vorige_staat
     except Exception as e:
         logging.error(f"Error loading state from KeyValueStore: {e}")
-        return {"bestellingen": [], "last_report_key": ""}
+        return {"bestellingen": []}
 
 def save_state_for_comparison(state):
     """Slaat alleen de data op die nodig is voor de *volgende* run."""
     logging.info("Nieuwe staat (voor vergelijking) wordt opgeslagen in PostgreSQL...")
     try:
-        for key in ['bestellingen', 'last_report_key']:
-            value = state.get(key)
-            if value is None:
-                continue
+        # We slaan alleen 'bestellingen' op
+        key = 'bestellingen'
+        value = state.get(key)
+        if value is None:
+            return # Doe niets als er geen bestellingen zijn
 
-            obj = KeyValueStore.query.get(key)
-            if obj:
-                obj.value = value
-            else:
-                obj = KeyValueStore(key=key, value=value)
-                db.session.add(obj)
+        obj = KeyValueStore.query.get(key)
+        if obj:
+            # Update de waarde als het al bestaat
+            obj.value = value
+        else:
+            # Maak een nieuw item aan als het niet bestaat
+            obj = KeyValueStore(key=key, value=value)
+            db.session.add(obj)
     except Exception as e:
         logging.error(f"Error saving state to KeyValueStore: {e}")
         db.session.rollback()
@@ -624,10 +626,11 @@ def main():
         logging.critical("FATAL ERROR: LIS_USER en LIS_PASS zijn niet ingesteld!")
         return
     
+    # Gebruik de nieuwe DB-laadfunctie (die 'last_report_key' negeert)
     vorige_staat = load_state_for_comparison()
     
     oude_bestellingen = vorige_staat.get("bestellingen", [])
-    last_report_key = vorige_staat.get("last_report_key", "")
+    # 'last_report_key' is hier verwijderd
     
     session = requests.Session()
     if not login(session):
@@ -671,26 +674,17 @@ def main():
     else:
         logging.info("First run, establishing baseline.")
     
-    report_times = [(1,0), (4, 0), (5, 30), (9,0), (12, 0), (13, 30), (17,0), (20, 0), (21, 30)]
-    tijdstip_voor_rapport = None
-    
-    for report_hour, report_minute in report_times:
-        rapport_tijd_vandaag = nu_brussels.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
-        if nu_brussels >= rapport_tijd_vandaag:
-            tijdstip_voor_rapport = rapport_tijd_vandaag
+    # --- HET 'SCHEDULED REPORTING' BLOK IS HIER VOLLEDIG VERWIJDERD ---
         
-    if tijdstip_voor_rapport:
-        current_key = tijdstip_voor_rapport.strftime('%Y-%m-%d-%H:%M')
-        if current_key != last_report_key:
-            logging.info(f"Time for scheduled report of {tijdstip_voor_rapport.strftime('%H:%M')}. (No email will be sent).")
-            last_report_key = current_key
-        
+    # --- Save State for Next Run ---
+    # Sla alleen de data op die nodig is voor de *volgende* vergelijking
     state_for_comparison = {
-        "bestellingen": nieuwe_bestellingen, 
-        "last_report_key": last_report_key
+        "bestellingen": nieuwe_bestellingen
+        # 'last_report_key' is hier verwijderd
     }
     save_state_for_comparison(state_for_comparison)
     
+    # --- FINALE COMMIT ---
     try:
         db.session.commit()
         logging.info("--- Run Completed, state saved to DB. ---")
