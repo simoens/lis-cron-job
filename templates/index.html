@@ -43,8 +43,7 @@
             color: white;
             text-decoration: none;
         }
-
-        /* --- START AANPASSING: KNOP UITLIJNING --- */
+        
         .header-buttons {
             float: right;
             display: flex; /* Gebruik flexbox voor perfecte uitlijning */
@@ -72,7 +71,6 @@
             text-decoration: none; /* Specifiek voor <a> tags */
             line-height: 1.5; /* Zorgt voor consistente regelhoogte */
         }
-        /* --- EINDE AANPASSING --- */
 
         .button:hover {
             background-color: #5a6268;
@@ -228,6 +226,8 @@
             </div>
             <h1>LIS Dashboard</h1>
         </div>
+
+
         <div class="content-box">
 
             <h2>LIS SNAPSHOT</h2>
@@ -253,13 +253,7 @@
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>
-                                        {% if schip.GisLink %}
-                                            <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                        {% else %}
-                                            {{ schip.Schip }}
-                                        {% endif %}
-                                    </td>
+                                    <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.berekende_eta }}</td>
                                     <td>{{ schip.Loods }}</td>
@@ -285,13 +279,7 @@
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
-                                    <td>
-                                        {% if schip.GisLink %}
-                                            <a href="{{ schip.GisLink }}" target="_blank" title="Bekijk op kaart">{{ schip.Schip }}</a>
-                                        {% else %}
-                                            {{ schip.Schip }}
-                                        {% endif %}
-                                    </td>
+                                    <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                 </tr>
@@ -301,7 +289,34 @@
                     {% else %}
                         <p>Geen schepen die aan de criteria voldoen.</p>
                     {% endif %}
-                </div>
+
+                    <h3>VERPLAATSINGEN (Besteltijd binnen 8u)</h3>
+                    
+                    {% if snapshot.content_data.VERPLAATSING %}
+                         <table>
+                            <thead>
+                                <tr>
+                                    <th>Schip</th>
+                                    <th>Besteltijd</th>
+                                    <th>Exit Point</th>
+                                    <th>Loods</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for schip in snapshot.content_data.VERPLAATSING %}
+                                <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
+                                    <td>{{ schip.Schip }}</td>
+                                    <td>{{ schip.Besteltijd }}</td>
+                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
+                                    <td>{{ schip.Loods }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p>Geen schepen die aan de criteria voldoen.</p>
+                    {% endif %}
+                    </div>
             
             {% elif snapshot.content %}
                 <div class="fallback-note">
