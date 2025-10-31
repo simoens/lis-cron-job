@@ -523,7 +523,7 @@ def main():
     # --- Save State for Next Run ---
     # Sla alleen de data op die nodig is voor de *volgende* vergelijking
     state_for_comparison = {
-        "bestellingen": newe_bestellingen, 
+        "bestellingen": nieuwe_bestellingen, 
         "last_report_key": last_report_key
     }
     save_state_for_comparison(state_for_comparison)
