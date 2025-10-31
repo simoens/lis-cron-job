@@ -32,20 +32,16 @@
             display: table;
             clear: both;
         }
-        
-        /* --- HIER IS DE WIJZIGING --- */
         .header-bar h1 {
             border: none;
             margin: 0;
             padding: 0;
             font-size: 1.8em;
             float: left;
-            font-weight: 400; /* Iets minder 'bold' dan standaard */
-            text-transform: uppercase; /* STRAKKE HOOFDLETTERS */
-            letter-spacing: 1.5px; /* Meer ruimte tussen letters */
+            font-weight: 400; /* Strak lettertype */
+            text-transform: uppercase; /* Hoofdletters */
+            letter-spacing: 1.5px; /* Ruimte */
         }
-        /* --- EINDE WIJZIGING --- */
-
         .header-bar a {
             color: white;
             text-decoration: none;
@@ -90,6 +86,7 @@
             padding: 10px 30px 30px 30px;
         }
 
+        /* --- START WIJZIGING --- */
         /* Sectie headers met geel accent */
         h2 {
             font-size: 1.4em;
@@ -97,6 +94,10 @@
             padding-left: 15px;
             margin-top: 25px;
             margin-bottom: 10px;
+            /* Stijlen van H1 overgenomen */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
         
         /* H3 STIJL AANGEPAST */
@@ -107,9 +108,14 @@
             color: #343a40; /* Donkere tekst voor contrast */
             padding: 8px 10px; /* Padding voor 'pill' effect */
             border-radius: 5px; /* Afgeronde hoeken */
+            /* Stijlen van H1 overgenomen */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
+        /* --- EINDE WIJZIGING --- */
         
-        /* VASTE TABELINDELING */
+        /* Tabellen */
         table {
             width: 100%;
             border-collapse: collapse;
