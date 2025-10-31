@@ -91,12 +91,15 @@
             margin-top: 25px;
             margin-bottom: 10px;
         }
+        
+        /* === WIJZIGING 2: H3 STIJL AANGEPAST === */
         h3 {
             margin-top: 25px;
             font-size: 1.1em;
-            color: #555;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 5px;
+            background-color: #f0c14b; /* Gele achtergrond (van knop) */
+            color: #343a40; /* Donkere tekst voor contrast */
+            padding: 8px 10px; /* Padding voor 'pill' effect */
+            border-radius: 5px; /* Afgeronde hoeken */
         }
         
         /* Tabellen */
@@ -246,18 +249,18 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>ETA MPET</th>
                                     <th>Loods</th>
-                                </tr>
+                                    <th>ETA MPET</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
-                                    <td>{{ schip.berekende_eta }}</td>
                                     <td>{{ schip.Loods }}</td>
-                                </tr>
+                                    <td>{{ schip.berekende_eta }}</td>
+                                    </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
