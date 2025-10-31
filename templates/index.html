@@ -193,8 +193,9 @@
 </head>
 <body>
 
-    <div class="container">
         <div class="header-bar">
+            <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Statistieken</a>
+
             <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Logboek</a>
             
             <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
