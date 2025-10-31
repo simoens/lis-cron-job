@@ -194,8 +194,9 @@
 <body>
 
     <div class="container">
-        
         <div class="header-bar">
+            <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Logboek</a>
+            
             <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
                 <input type="hidden" name="secret" value="{{ secret_key }}">
                 <button id="force-snapshot-button" type="submit" class="button">Forceer Overzicht</button>
