@@ -247,11 +247,11 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Schip</th>
-                                    <th>Besteltijd</th>
-                                    <th>Loods</th>
+                                    <th>SCHIP</th>
+                                    <th>BESTELTIJD</th>
+                                    <th>LOODS</th>
                                     <th>ETA MPET</th>
-                                </tr>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
@@ -274,10 +274,10 @@
                          <table>
                             <thead>
                                 <tr>
-                                    <th>Schip</th>
-                                    <th>Besteltijd</th>
-                                    <th>Loods</th>
-                                </tr>
+                                    <th>SCHIP</th>
+                                    <th>BESTELTIJD</th>
+                                    <th>LOODS</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
@@ -299,10 +299,10 @@
                          <table>
                             <thead>
                                 <tr>
-                                    <th>Schip</th>
-                                    <th>Besteltijd</th>
-                                    <th>Loods</th>
-                                    <th>Bestemming</th>
+                                    <th>SCHIP</th>
+                                    <th>BESTELTIJD</th>
+                                    <th>LOODS</th>
+                                    <th>BESTEMMING</th>
                                     </tr>
                             </thead>
                             <tbody>
@@ -312,7 +312,7 @@
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.get('Exit Point', 'N/A') }}</td>
-                                    </tr>
+                                </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
