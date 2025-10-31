@@ -621,18 +621,27 @@ def format_wijzigingen_email(wijzigingen):
             tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
             tekst += f" - Type: {details.get('Type', 'N/A')}\n"
             tekst += f" - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
-            # ETA/ETD hier ook verwijderd voor consistentie
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
         
         elif status == 'GEWIJZIGD':
-            tekst = f"*** GEWIJZIGD: '{s_naam}'\n"
-            
             # --- START AANPASSING ---
-            # 'ETA/ETD' is hier verwijderd uit de lijst
-            tekst += "\n".join([f" - {k}: '{v['oud']}' -> '{v['nieuw']}'" 
-                                for k, v in w['wijzigingen'].items() 
-                                if k in {'Besteltijd', 'Loods'}])
+            # Verwijder '*** GEWIJZIGD: '
+            tekst = f"'{s_naam}'\n"
             # --- EINDE AANPASSING ---
+            
+            relevante_diffs = []
+            for k, v in w['wijzigingen'].items():
+                if k == 'Loods':
+                    if v['nieuw'] and not v['oud']:
+                        relevante_diffs.append(f" - LOODS TOEGEWEZEN: '{v['nieuw']}'")
+                    elif not v['nieuw'] and v['oud']:
+                        relevante_diffs.append(f" - LOODS VERWIJDERD (was '{v['oud']}')")
+                    else:
+                        relevante_diffs.append(f" - Loods: '{v['oud']}' -> '{v['nieuw']}'")
+                elif k == 'Besteltijd':
+                    relevante_diffs.append(f" - Besteltijd: '{v['oud']}' -> '{v['nieuw']}'")
+            
+            tekst += "\n".join(relevante_diffs)
         
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
@@ -641,7 +650,6 @@ def format_wijzigingen_email(wijzigingen):
 
         body.append(tekst)
     
-    # Filter lege strings eruit (kan gebeuren als een 'GEWIJZIGD' nu geen relevante data meer heeft)
     return "\n\n".join(filter(None, body))
 
 def main():
