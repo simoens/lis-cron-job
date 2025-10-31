@@ -429,19 +429,14 @@ def haal_pta_van_reisplan(session, reis_id):
 def filter_snapshot_schepen(bestellingen, session, nu): 
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     
-    # --- HIER IS DE AANPASSING ---
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
-    # --- EINDE AANPASSING ---
     
     brussels_tz = pytz.timezone('Europe/Brussels') 
     
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
-    
-    # --- HIER IS DE AANPASSING ---
-    grens_verplaatsing_toekomst = nu + timedelta(hours=8) # Nieuwe tijdgrens
-    # --- EINDE AANPASSING ---
+    grens_verplaatsing_toekomst = nu + timedelta(hours=8)
     
     bestellingen.sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')), reverse=True)
 
@@ -460,17 +455,31 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
             besteltijd = brussels_tz.localize(besteltijd_naive)
             
-            # --- HIER IS DE AANPASSING ---
-            schip_type = b.get("Type") # Haal type eenmalig op
+            # --- START AANPASSING: STATUSFLAG LOGICA ---
+            status_flag = "normal" # Default
+            loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
+
+            if not loods_toegewezen:
+                # Bereken het verschil in seconden tot de besteltijd
+                time_diff_seconds = (besteltijd - nu).total_seconds()
+                
+                if time_diff_seconds < 0:
+                    # Besteltijd is in het verleden
+                    status_flag = "past_due" # Rood
+                elif time_diff_seconds < 3600: # 3600 seconden = 1 uur
+                    # Besteltijd is binnen 1 uur in de toekomst
+                    status_flag = "due_soon" # Oranje
+            
+            b['status_flag'] = status_flag
+            # --- EINDE AANPASSING ---
+            
+            schip_type = b.get("Type")
             
             if schip_type == "U": 
-            # --- EINDE AANPASSING ---
                 if nu <= besteltijd <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
                     
-            # --- HIER IS DE AANPASSING ---
             elif schip_type == "I": 
-            # --- EINDE AANPASSING ---
                 if grens_in_verleden <= besteltijd <= grens_in_toekomst:
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
@@ -483,11 +492,9 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                             
                     gefilterd["INKOMEND"].append(b)
             
-            # --- HIER IS DE AANPASSING ---
-            elif schip_type == "V": # Nieuwe logica voor Verplaatsing
+            elif schip_type == "V": 
                 if nu <= besteltijd <= grens_verplaatsing_toekomst:
                     gefilterd["VERPLAATSING"].append(b)
-            # --- EINDE AANPASSING ---
                     
         except (ValueError, TypeError) as e:
             logging.warning(f"Fout bij verwerken van '{besteltijd_str_raw}' (Fout: {e}). Schip wordt overgeslagen.", exc_info=False)
@@ -495,10 +502,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     gefilterd["UITGAAND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
-    
-    # --- HIER IS DE AANPASSING ---
     gefilterd["VERPLAATSING"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
-    # --- EINDE AANPASSING ---
     
     return gefilterd
 
