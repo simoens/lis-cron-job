@@ -26,13 +26,20 @@
             border-radius: 8px 8px 0 0;
         }
         .header-bar::after { content: ""; display: table; clear: both; }
+
+        /* --- HIER IS DE WIJZIGING --- */
         .header-bar h1 {
             border: none;
             margin: 0;
             padding: 0;
             font-size: 1.8em;
             float: left;
+            font-weight: 400; /* Strak lettertype */
+            text-transform: uppercase; /* Hoofdletters */
+            letter-spacing: 1.5px; /* Ruimte */
         }
+        /* --- EINDE WIJZIGING --- */
+
         .header-bar a {
             color: white;
             text-decoration: none;
@@ -52,12 +59,18 @@
         }
         .button:hover { background-color: #5a6268; }
         .content-box { padding: 10px 30px 30px 30px; }
+        
+        /* --- HIER IS DE WIJZIGING --- */
         h2 {
             font-size: 1.4em;
             border-left: 5px solid #f0c14b;
             padding-left: 15px;
             margin-top: 25px;
             margin-bottom: 20px;
+            /* Stijlen van H1 overgenomen */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
         /* Aangepaste H3 stijl */
         h3 {
@@ -67,7 +80,12 @@
             color: #343a40; /* Donkere tekst voor contrast */
             padding: 8px 10px; /* Padding voor 'pill' effect */
             border-radius: 5px; /* Afgeronde hoeken */
+            /* Stijlen van H1 overgenomen */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
+        /* --- EINDE WIJZIGING --- */
         
         /* Stijlen voor statistiek-kaarten */
         .stats-grid {
@@ -92,6 +110,10 @@
             border-bottom: 1px solid #eee;
             margin-top: 0;
             border-radius: 0;
+            /* Behoud de strakke font */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
         .stat-card .value {
             font-size: 2.5em;
