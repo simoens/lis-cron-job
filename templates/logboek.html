@@ -64,20 +64,13 @@
         .search-form {
             margin-bottom: 20px;
         }
-        /* --- AANPASSING: Stijl voor de dropdown --- */
         .search-form .search-select {
             font-size: 1.1em;
             padding: 10px;
-            width: 70%;
+            width: 100%; /* Maak de dropdown 100% breed nu de knop weg is */
             border: 1px solid #ddd;
             border-radius: 5px;
-            background-color: #fff; /* Zorgt voor witte achtergrond */
-        }
-        .search-form .button {
-            float: none;
-            margin-left: 10px;
-            text-transform: none;
-            font-size: 1.1em;
+            background-color: #fff;
         }
 
         /* Stijlen voor de resultaten (kopie van index) */
@@ -131,8 +124,7 @@
                     {% endfor %}
                 </select>
                 
-                <button type="submit" class="button">Zoeken</button>
-            </form>
+                </form>
             <hr>
 
             {% if changes %}
