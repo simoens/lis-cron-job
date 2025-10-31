@@ -132,14 +132,20 @@
         
         /* Groene achtergrond voor toegewezen loods */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
-            background-color: #dff0d8; /* Lichtgroen */
+            background-color: #dff0d8; /* Zachtgroen */
             font-weight: 500; 
         }
+
+        /* === WIJZIGING 1: ANIMATIE TOEGEVOEGD === */
         /* Oranje voor <1u in toekomst (zonder loods) */
         tr.status-due-soon, tr.status-due-soon:nth-child(even) {
             background-color: #fff3e0; /* Zachtoranje */
             font-weight: 500;
+            /* Pas de "pulse-orange" animatie toe: 4s duur, soepel, oneindig */
+            animation: pulse-orange 4s ease-in-out infinite; 
         }
+        /* === EINDE WIJZIGING 1 === */
+
         /* Rood voor verleden (zonder loods) */
         tr.status-past-due, tr.status-past-due:nth-child(even) {
             background-color: #ffebee; /* Zachtrood */
@@ -218,6 +224,22 @@
         .toast-close:hover {
             color: #000;
         }
+
+        /* === WIJZIGING 2: @keyframes REGEL TOEGEVOEGD === */
+        /* Definieert de "adem" animatie */
+        @keyframes pulse-orange {
+          0% {
+            background-color: #fff3e0; /* Begin (zachtoranje) */
+          }
+          50% {
+            background-color: #ffe0b2; /* Midden (iets donkerder) */
+          }
+          100% {
+            background-color: #fff3e0; /* Terug naar begin */
+          }
+        }
+        /* === EINDE WIJZIGING 2 === */
+
     </style>
 </head>
 <body>
@@ -357,8 +379,9 @@
                 <p>Wachten op de eerste run...</p>
             {% endif %}
 
-            
+
             <h2>RECENTE WIJZIGINGEN (max 10)</h2>
+            
             {% if changes %}
                 {% for change in changes %}
                     <div class="change-item">
