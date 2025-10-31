@@ -55,7 +55,6 @@
         }
         
         .button {
-            /* float: right; -- DEZE IS VERWIJDERD */
             background-color: #f0c14b; /* Gele knop */
             color: white;
             padding: 10px 15px;
@@ -65,11 +64,9 @@
             font-size: 0.9em;
             font-weight: bold;
             text-transform: uppercase;
-            /* margin-top: 2px; -- NIET MEER NODIG DANKZIJ FLEXBOX */
-            
-            display: inline-block; /* Zorgt dat <a> padding correct toepast */
-            text-decoration: none; /* Specifiek voor <a> tags */
-            line-height: 1.5; /* Zorgt voor consistente regelhoogte */
+            display: inline-block; 
+            text-decoration: none; 
+            line-height: 1.5; 
         }
 
         .button:hover {
@@ -230,15 +227,18 @@
 
         <div class="content-box">
 
-            <h2>LIS SNAPSHOT</h2>
-            <p style="color: #666; margin-top: -5px;" id="timestamp-display">
-                Laatste update op: {{ snapshot.timestamp }}
-            </p>
+            <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: -10px;">
+                <h2>LIS SNAPSHOT</h2>
+                <p style="color: #666;" id="timestamp-display">
+                    (Laatste update op: {{ snapshot.timestamp }})
+                </p>
+            </div>
+
 
             {% if snapshot.content_data %}
                 <div class="snapshot-content">
                     
-                    <h3>INKOMENDE SCHEPEN (Besteltijd tussen -8u en +8u)</h3>
+                    <h3>INKOMENDE SCHEPEN</h3>
                     
                     {% if snapshot.content_data.INKOMEND %}
                         <table>
@@ -265,7 +265,7 @@
                         <p>Geen schepen die aan de criteria voldoen.</p>
                     {% endif %}
 
-                    <h3>UITGAANDE SCHEPEN (Besteltijd binnen 16u)</h3>
+                    <h3>UITGAANDE SCHEPEN</h3>
                     
                     {% if snapshot.content_data.UITGAAND %}
                          <table>
@@ -290,7 +290,7 @@
                         <p>Geen schepen die aan de criteria voldoen.</p>
                     {% endif %}
 
-                    <h3>VERPLAATSINGEN (Besteltijd binnen 8u)</h3>
+                    <h3>SHIFTING</h3>
                     
                     {% if snapshot.content_data.VERPLAATSING %}
                          <table>
@@ -298,7 +298,7 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>Exit Point</th>
+                                    <th>Bestemming</th>
                                     <th>Loods</th>
                                 </tr>
                             </thead>
@@ -316,7 +316,8 @@
                     {% else %}
                         <p>Geen schepen die aan de criteria voldoen.</p>
                     {% endif %}
-                    </div>
+
+                </div>
             
             {% elif snapshot.content %}
                 <div class="fallback-note">
@@ -362,7 +363,8 @@
         function getDisplayedTimestamp() {
             const el = document.getElementById('timestamp-display');
             if (el) {
-                return el.innerText.replace('Laatste update op: ', '').trim();
+                // Leest: (Laatste update op: 31-10-2025 01:02:13)
+                return el.innerText.replace('(Laatste update op: ', '').replace(')', '').trim();
             }
             return null;
         }
@@ -432,7 +434,7 @@
             event.preventDefault(); 
             forceButton.disabled = true;
             forceButton.innerText = "Bezig...";
-            timestampEl.innerText = "Laatste update op: Bezig met vernieuwen...";
+            timestampEl.innerText = "(Bezig met vernieuwen...)";
 
             try {
                 await fetch(forceForm.action, {
@@ -443,7 +445,7 @@
                 console.error('Fout bij aanroepen /force-snapshot:', error);
                 forceButton.disabled = false;
                 forceButton.innerText = "Forceer Overzicht";
-                timestampEl.innerText = `Laatste update op: ${originalTimestamp} (Fout bij forceren)`;
+                timestampEl.innerText = `(Fout bij forceren: ${originalTimestamp})`;
                 return;
             }
 
@@ -467,7 +469,7 @@
                 clearInterval(fastPoll);
                 forceButton.disabled = false;
                 forceButton.innerText = "Forceer Overzicht";
-                timestampEl.innerText = `Laatste update op: ${originalTimestamp} (Timeout)`;
+                timestampEl.innerText = `(Timeout: ${originalTimestamp})`;
             }, 90000); 
         });
     </script>
