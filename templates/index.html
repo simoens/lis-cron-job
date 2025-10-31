@@ -180,7 +180,7 @@
             font-weight: 500;
         }
 
-        /* Stijl voor de Pop-up (Toast) */
+        /* --- STIJL VOOR POP-UP (RECHTSONDER) --- */
         .toast-notification {
             position: fixed;
             bottom: 20px;
@@ -220,17 +220,18 @@
         .toast-close:hover {
             color: #000;
         }
+        /* De .toast-overlay stijl is verwijderd */
 
         /* Animatie voor oranje rijen */
         @keyframes pulse-orange {
           0% {
-            background-color: #fff3e0; /* Begin (zachtoranje) */
+            background-color: #fff3e0; 
           }
           50% {
-            background-color: #ffe0b2; /* Midden (iets donkerder) */
+            background-color: #ffe0b2; 
           }
           100% {
-            background-color: #fff3e0; /* Terug naar begin */
+            background-color: #fff3e0; 
           }
         }
     </style>
@@ -276,7 +277,7 @@
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
                                     <th style="width: 30%;">ETA MPET</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
@@ -308,7 +309,7 @@
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
                                     <th style="width: 30%;">BESTEMMING</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
@@ -339,8 +340,8 @@
                                     <th style="width: 30%;">SCHIP</th>
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
-                                    <th style_name="width: 30%;">BESTEMMING</th>
-                                    </tr>
+                                    <th style="width: 30%;">BESTEMMING</th>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.VERPLAATSING %}
@@ -400,7 +401,6 @@
             <pre></pre>
         </div>
     </div>
-
     <audio id="notification-sound" src="https://actions.google.com/sounds/v1/basic_sounds/bell_tink.ogg" preload="auto"></audio>
 
 
@@ -437,8 +437,12 @@
             }, 60000); // 60000 ms = 1 minuut
         }
 
-        // --- SCRIPT 2: Pop-up Notificatie ---
+        // --- SCRIPT 2: Pop-up Notificatie (Terug naar de hoek) ---
         document.addEventListener('DOMContentLoaded', () => {
+            
+            const toast = document.getElementById('change-toast');
+            const closeBtn = document.getElementById('toast-close-btn');
+
             {% if changes and changes[0] %}
                 const latestChange = {
                     timestamp: {{ changes[0].timestamp | tojson }},
@@ -454,18 +458,20 @@
                     document.querySelector('#toast-body pre').innerText = latestChange.content;
                     
                     // Toon de pop-up
-                    const toast = document.getElementById('change-toast');
                     toast.style.display = 'block';
 
                     // Speel het geluid af
                     const sound = document.getElementById('notification-sound');
                     sound.play().catch(e => console.warn("Audio kon niet automatisch afspelen:", e));
 
-                    // Stel de 'close' knop in
-                    document.getElementById('toast-close-btn').onclick = () => {
+                    // Functie om te sluiten
+                    function closeToast() {
                         toast.style.display = 'none';
                         localStorage.setItem(storageKey, latestChange.timestamp);
-                    };
+                    }
+
+                    // Stel de 'close' knop in
+                    closeBtn.onclick = closeToast;
                 }
             {% endif %}
         });
