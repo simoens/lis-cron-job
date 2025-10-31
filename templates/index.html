@@ -32,13 +32,20 @@
             display: table;
             clear: both;
         }
+        
+        /* --- HIER IS DE WIJZIGING --- */
         .header-bar h1 {
             border: none;
             margin: 0;
             padding: 0;
             font-size: 1.8em;
             float: left;
+            font-weight: 400; /* Iets minder 'bold' dan standaard */
+            text-transform: uppercase; /* STRAKKE HOOFDLETTERS */
+            letter-spacing: 1.5px; /* Meer ruimte tussen letters */
         }
+        /* --- EINDE WIJZIGING --- */
+
         .header-bar a {
             color: white;
             text-decoration: none;
@@ -180,7 +187,7 @@
             font-weight: 500;
         }
 
-        /* --- STIJL VOOR POP-UP (RECHTSONDER) --- */
+        /* Stijl voor de Pop-up (Toast) */
         .toast-notification {
             position: fixed;
             bottom: 20px;
@@ -220,7 +227,6 @@
         .toast-close:hover {
             color: #000;
         }
-        /* De .toast-overlay stijl is verwijderd */
 
         /* Animatie voor oranje rijen */
         @keyframes pulse-orange {
@@ -401,6 +407,7 @@
             <pre></pre>
         </div>
     </div>
+
     <audio id="notification-sound" src="https://actions.google.com/sounds/v1/basic_sounds/bell_tink.ogg" preload="auto"></audio>
 
 
@@ -437,12 +444,8 @@
             }, 60000); // 60000 ms = 1 minuut
         }
 
-        // --- SCRIPT 2: Pop-up Notificatie (Terug naar de hoek) ---
+        // --- SCRIPT 2: Pop-up Notificatie ---
         document.addEventListener('DOMContentLoaded', () => {
-            
-            const toast = document.getElementById('change-toast');
-            const closeBtn = document.getElementById('toast-close-btn');
-
             {% if changes and changes[0] %}
                 const latestChange = {
                     timestamp: {{ changes[0].timestamp | tojson }},
@@ -458,20 +461,18 @@
                     document.querySelector('#toast-body pre').innerText = latestChange.content;
                     
                     // Toon de pop-up
+                    const toast = document.getElementById('change-toast');
                     toast.style.display = 'block';
 
                     // Speel het geluid af
                     const sound = document.getElementById('notification-sound');
                     sound.play().catch(e => console.warn("Audio kon niet automatisch afspelen:", e));
 
-                    // Functie om te sluiten
-                    function closeToast() {
+                    // Stel de 'close' knop in
+                    document.getElementById('toast-close-btn').onclick = () => {
                         toast.style.display = 'none';
                         localStorage.setItem(storageKey, latestChange.timestamp);
-                    }
-
-                    // Stel de 'close' knop in
-                    closeBtn.onclick = closeToast;
+                    };
                 }
             {% endif %}
         });
