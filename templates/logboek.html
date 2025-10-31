@@ -57,19 +57,21 @@
             border-left: 5px solid #f0c14b;
             padding-left: 15px;
             margin-top: 25px;
-            margin-bottom: 10px;
+            margin-bottom: 20px;
         }
         
         /* Stijlen voor het zoekvak */
         .search-form {
             margin-bottom: 20px;
         }
-        .search-form input[type="text"] {
+        /* --- AANPASSING: Stijl voor de dropdown --- */
+        .search-form .search-select {
             font-size: 1.1em;
             padding: 10px;
             width: 70%;
             border: 1px solid #ddd;
             border-radius: 5px;
+            background-color: #fff; /* Zorgt voor witte achtergrond */
         }
         .search-form .button {
             float: none;
@@ -109,7 +111,6 @@
         
         <div class="header-bar">
             <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Statistieken</a>
-
             <a href="{{ url_for('home') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Terug naar Dashboard</a>
             
             <a href="{{ url_for('home') }}"><h1>LIS Dashboard</h1></a>
@@ -120,12 +121,25 @@
             <h2>Logboek Wijzigingen</h2>
 
             <form action="{{ url_for('logboek') }}" method="GET" class="search-form">
-                <input type="text" name="q" placeholder="Zoek op scheepsnaam..." value="{{ search_term }}">
+                
+                <select name="q" class="search-select" onchange="this.form.submit()">
+                    <option value="">-- Selecteer een schip --</option>
+                    {% for ship in all_ships %}
+                        <option value="{{ ship }}" {% if ship == search_term %}selected{% endif %}>
+                            {{ ship }}
+                        </option>
+                    {% endfor %}
+                </select>
+                
                 <button type="submit" class="button">Zoeken</button>
             </form>
             <hr>
 
             {% if changes %}
+                {% if search_term %}
+                    <p>Resultaten voor: <strong>{{ search_term }}</strong></p>
+                {% endif %}
+                
                 {% for change in changes %}
                     <div class="change-item">
                         <div class="change-header">
@@ -135,7 +149,11 @@
                     </div>
                 {% endfor %}
             {% else %}
-                <p>Geen wijzigingen gevonden die voldoen aan de zoekterm '{{ search_term }}'.</p>
+                {% if search_term %}
+                    <p>Geen wijzigingen gevonden die voldoen aan de zoekterm '{{ search_term }}'.</p>
+                {% else %}
+                    <p>Selecteer een schip hierboven om de geschiedenis te zien.</p>
+                {% endif %}
             {% endif %}
 
         </div>
