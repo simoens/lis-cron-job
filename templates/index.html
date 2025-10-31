@@ -43,8 +43,20 @@
             color: white;
             text-decoration: none;
         }
-        .button {
+
+        /* --- START AANPASSING: KNOP UITLIJNING --- */
+        .header-buttons {
             float: right;
+            display: flex; /* Gebruik flexbox voor perfecte uitlijning */
+            gap: 10px; /* Ruimte tussen de knoppen */
+            align-items: center; /* Lijn ze verticaal in het midden uit */
+        }
+        .header-buttons form {
+            margin: 0; /* Verwijder default form margin */
+        }
+        
+        .button {
+            /* float: right; -- DEZE IS VERWIJDERD */
             background-color: #f0c14b; /* Gele knop */
             color: white;
             padding: 10px 15px;
@@ -54,8 +66,14 @@
             font-size: 0.9em;
             font-weight: bold;
             text-transform: uppercase;
-            margin-top: 2px; /* Lijn knop uit met titel */
+            /* margin-top: 2px; -- NIET MEER NODIG DANKZIJ FLEXBOX */
+            
+            display: inline-block; /* Zorgt dat <a> padding correct toepast */
+            text-decoration: none; /* Specifiek voor <a> tags */
+            line-height: 1.5; /* Zorgt voor consistente regelhoogte */
         }
+        /* --- EINDE AANPASSING --- */
+
         .button:hover {
             background-color: #5a6268;
         }
@@ -199,16 +217,17 @@
     <div class="container">
         
         <div class="header-bar">
-            <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Statistieken</a>
-            <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d; margin-left: 10px;">Logboek</a>
-            
-            <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
-                <input type="hidden" name="secret" value="{{ secret_key }}">
-                <button id="force-snapshot-button" type="submit" class="button">Forceer Overzicht</button>
-            </form>
+            <div class="header-buttons">
+                <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d;">Statistieken</a>
+                <a href="{{ url_for('logboek') }}" class="button" style="background-color: #6c757d;">Logboek</a>
+                
+                <form id="force-snapshot-form" action="{{ url_for('force_snapshot_route') }}" method="POST">
+                    <input type="hidden" name="secret" value="{{ secret_key }}">
+                    <button id="force-snapshot-button" type="submit" class="button">Forceer Overzicht</button>
+                </form>
+            </div>
             <h1>LIS Dashboard</h1>
         </div>
-
         <div class="content-box">
 
             <h2>LIS SNAPSHOT</h2>
