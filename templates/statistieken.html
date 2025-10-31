@@ -59,12 +59,14 @@
             margin-top: 25px;
             margin-bottom: 20px;
         }
+        /* Aangepaste H3 stijl */
         h3 {
             margin-top: 25px;
             font-size: 1.1em;
-            color: #555;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 5px;
+            background-color: #f0c14b; /* Gele achtergrond (van knop) */
+            color: #343a40; /* Donkere tekst voor contrast */
+            padding: 8px 10px; /* Padding voor 'pill' effect */
+            border-radius: 5px; /* Afgeronde hoeken */
         }
         
         /* Stijlen voor statistiek-kaarten */
@@ -80,6 +82,16 @@
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+        }
+        /* H3 binnen een stat-card moet NIET geel zijn */
+        .stat-card h3 {
+            background-color: transparent;
+            color: #555;
+            padding: 0;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+            margin-top: 0;
+            border-radius: 0;
         }
         .stat-card .value {
             font-size: 2.5em;
@@ -169,15 +181,15 @@
 
             <hr>
 
-            <h3>Vervroegde Besteltijden (Uitgaand)</h3>
+            <h3>VERVROEGDE BESTELTIJDEN (UITGAAND)</h3>
             {% if stats.vervroegd %}
                 <table>
                     <thead>
                         <tr>
-                            <th>Schip</th>
-                            <th>Eerste Tijd</th>
-                            <th>Laatste Tijd</th>
-                            <th>Delta (Vervroegd)</th>
+                            <th>SCHIP</th>
+                            <th>EERSTE TIJD</th>
+                            <th>LAATSTE TIJD</th>
+                            <th>DELTA (VERVROEGD)</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -195,15 +207,15 @@
                 <p>Geen vervroegde schepen gevonden.</p>
             {% endif %}
 
-            <h3>Vertraagde Besteltijden (Uitgaand)</h3>
+            <h3>VERTRAAGDE BESTELTIJDEN (UITGAAND)</h3>
             {% if stats.vertraagd %}
                 <table>
                     <thead>
                         <tr>
-                            <th>Schip</th>
-                            <th>Eerste Tijd</th>
-                            <th>Laatste Tijd</th>
-                            <th>Delta (Vertraagd)</th>
+                            <th>SCHIP</th>
+                            <th>EERSTE TIJD</th>
+                            <th>LAATSTE TIJD</th>
+                            <th>DELTA (VERTRAAGD)</th>
                         </tr>
                     </thead>
                     <tbody>
