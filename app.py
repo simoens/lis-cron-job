@@ -171,19 +171,42 @@ def statistieken():
 def logboek():
     """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
     
-    # Haal de zoekterm uit de URL (bv. /logboek?q=MSC)
     search_term = request.args.get('q', '')
     
+    # --- NIEUWE LOGICA: Haal alle unieke scheepsnamen op ---
+    
+    # 1. Haal *alle* wijzigingen op uit de database
+    all_changes_query = DetectedChange.query.all()
+    
+    # 2. Definieer de regex om scheepsnamen te vinden
+    #    (dezelfde als in de 'statistieken' pagina)
+    ship_regex = re.compile(r"(?:NIEUW SCHIP|GEWIJZIGD|VERWIJDERD): '([^']+)'")
+    
+    # 3. Gebruik een 'set' om automatisch duplicaten te verwijderen
+    unique_ships = set()
+    
+    # 4. Loop door alle wijzigingen en verzamel de namen
+    for change in all_changes_query:
+        if change.content:
+            ship_names_found = ship_regex.findall(change.content)
+            for name in ship_names_found:
+                unique_ships.add(name.strip()) # strip() haalt witruimte aan begin/eind weg
+                
+    # 5. Converteer de 'set' naar een alfabetisch gesorteerde 'list'
+    all_ships_sorted = sorted(list(unique_ships))
+    
+    # --- EINDE NIEUWE LOGICA ---
+
+    # --- Bestaande logica voor het filteren van resultaten ---
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
     
     if search_term:
         # Filter de 'content' kolom. 'ilike' betekent 'case-insensitive'
         query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
     
-    # Haal alle resultaten op (max 100 voor de veiligheid)
     changes_db_objects = query.limit(100).all()
     
-    # Converteer de DB objecten naar dictionaries, net als op de homepage
+    # Converteer de DB objecten naar dictionaries
     formatted_changes = []
     for change in changes_db_objects:
         formatted_changes.append({
@@ -195,6 +218,7 @@ def logboek():
     return render_template('logboek.html', 
                             changes=formatted_changes, 
                             search_term=search_term,
+                            all_ships=all_ships_sorted, # <-- Geef de nieuwe lijst door
                             secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/')
