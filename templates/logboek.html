@@ -26,13 +26,20 @@
             border-radius: 8px 8px 0 0;
         }
         .header-bar::after { content: ""; display: table; clear: both; }
+        
+        /* --- HIER IS DE WIJZIGING --- */
         .header-bar h1 {
             border: none;
             margin: 0;
             padding: 0;
             font-size: 1.8em;
             float: left;
+            font-weight: 400; /* Strak lettertype */
+            text-transform: uppercase; /* Hoofdletters */
+            letter-spacing: 1.5px; /* Ruimte */
         }
+        /* --- EINDE WIJZIGING --- */
+        
         .header-bar a {
             color: white;
             text-decoration: none;
@@ -52,13 +59,20 @@
         }
         .button:hover { background-color: #5a6268; }
         .content-box { padding: 10px 30px 30px 30px; }
+        
+        /* --- HIER IS DE WIJZIGING --- */
         h2 {
             font-size: 1.4em;
             border-left: 5px solid #f0c14b;
             padding-left: 15px;
             margin-top: 25px;
             margin-bottom: 20px;
+            /* Stijlen van H1 overgenomen */
+            font-weight: 400;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }
+        /* --- EINDE WIJZIGING --- */
         
         /* Stijlen voor het zoekvak */
         .search-form {
@@ -124,7 +138,7 @@
                     {% endfor %}
                 </select>
                 
-                </form>
+            </form>
             <hr>
 
             {% if changes %}
