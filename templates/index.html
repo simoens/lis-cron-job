@@ -92,7 +92,7 @@
             margin-bottom: 10px;
         }
         
-        /* === WIJZIGING 2: H3 STIJL AANGEPAST === */
+        /* H3 STIJL AANGEPAST */
         h3 {
             margin-top: 25px;
             font-size: 1.1em;
@@ -251,7 +251,7 @@
                                     <th>Besteltijd</th>
                                     <th>Loods</th>
                                     <th>ETA MPET</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
@@ -260,7 +260,7 @@
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.berekende_eta }}</td>
-                                    </tr>
+                                </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
@@ -301,18 +301,18 @@
                                 <tr>
                                     <th>Schip</th>
                                     <th>Besteltijd</th>
-                                    <th>Bestemming</th>
                                     <th>Loods</th>
-                                </tr>
+                                    <th>Bestemming</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.VERPLAATSING %}
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% endif %}">
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
-                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
                                     <td>{{ schip.Loods }}</td>
-                                </tr>
+                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
+                                    </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
