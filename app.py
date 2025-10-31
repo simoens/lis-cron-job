@@ -528,24 +528,32 @@ def filter_dubbele_schepen(bestellingen):
     return list(unieke_schepen.values())
 
 def vergelijk_bestellingen(oude, nieuwe):
+    """Vergelijkt oude en nieuwe bestellijsten."""
+    
     oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
             for b in filter_dubbele_schepen(oude) if b.get('Schip')}
     nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
                    for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
+    
     oude_schepen_namen = set(oude_dict.keys())
     nieuwe_schepen_namen = set(nieuwe_dict.keys())
+
     wijzigingen = []
     nu_brussels = datetime.now(pytz.timezone('Europe/Brussels')) 
     brussels_tz = pytz.timezone('Europe/Brussels')
     
     def moet_rapporteren(bestelling):
         besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
+        
         besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
         if besteltijd_naive.year == 1970: 
              return False
+        
         besteltijd = brussels_tz.localize(besteltijd_naive)
+        
         rapporteer = True
         type_schip = bestelling.get('Type')
+        
         try:
             if type_schip == 'I':
                 if not (nu_brussels - timedelta(hours=8) <= besteltijd <= nu_brussels + timedelta(hours=8)):
@@ -553,14 +561,9 @@ def vergelijk_bestellingen(oude, nieuwe):
             elif type_schip == 'U':
                 if not (nu_brussels <= besteltijd <= nu_brussels + timedelta(hours=16)):
                     rapporteer = False
-            
-            # --- HIER IS DE AANPASSING ---
-            # Voeg filtertijd toe voor Type 'V'
             elif type_schip == 'V':
                 if not (nu_brussels <= besteltijd <= nu_brussels + timedelta(hours=8)):
                     rapporteer = False
-            # --- EINDE AANPASSING ---
-
         except (ValueError, TypeError) as e:
             logging.warning(f"Datum/tijd parsefout bij filteren van '{bestelling.get('Schip')}': {e}")
             return False
@@ -584,41 +587,62 @@ def vergelijk_bestellingen(oude, nieuwe):
         if n_best.get('Type') != o_best.get('Type'):
             continue
         diff = {k: {'oud': o_best.get(k, ''), 'nieuw': v} for k, v in n_best.items() if v != o_best.get(k, '')}
+        
         if diff:
             gewijzigde_sleutels = set(diff.keys())
-            if n_best.get('Type') == 'I' and gewijzigde_sleutels == {'ETA/ETD'}:
-                logging.info(f"Onderdrukt: Alleen ETA/ETD gewijzigd voor inkomend schip {schip_naam}")
-                continue 
-            relevante = {'Besteltijd', 'ETA/ETD', 'Loods'}
+            
+            # --- START AANPASSING ---
+            # De oude check voor 'Type == I' is verwijderd.
+            # We definiëren 'relevante' wijzigingen nu ZONDER 'ETA/ETD'.
+            relevante = {'Besteltijd', 'Loods'}
+            # --- EINDE AANPASSING ---
+
             if relevante.intersection(gewijzigde_sleutels): 
                 if moet_rapporteren(n_best) or moet_rapporteren(o_best):
-                    wijzigingen.append({'Schip': n_best.get('Schip'), 'status': 'GEWIJZIGD', 'wijzigingen': diff})
+                    wijzigingen.append({
+                        'Schip': n_best.get('Schip'),
+                        'status': 'GEWIJZIGD',
+                        'wijzigingen': diff
+                    })
+            
     return wijzigingen
 
 def format_wijzigingen_email(wijzigingen):
+    """Formatteert de lijst met wijzigingen naar een plain text body."""
     body = []
     wijzigingen.sort(key=lambda x: x.get('status', ''))
+    
     for w in wijzigingen:
         s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
         status = w.get('status')
+        
         if status == 'NIEUW':
             details = w.get('details', {})
             tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
             tekst += f" - Type: {details.get('Type', 'N/A')}\n"
             tekst += f" - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
-            tekst += f" - ETA/ETD: {details.get('ETA/ETD', 'N/A')}\n"
+            # ETA/ETD hier ook verwijderd voor consistentie
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
+        
         elif status == 'GEWIJZIGD':
             tekst = f"*** GEWIJZIGD: '{s_naam}'\n"
+            
+            # --- START AANPASSING ---
+            # 'ETA/ETD' is hier verwijderd uit de lijst
             tekst += "\n".join([f" - {k}: '{v['oud']}' -> '{v['nieuw']}'" 
                                 for k, v in w['wijzigingen'].items() 
-                                if k in {'Besteltijd', 'ETA/ETD', 'Loods'}])
+                                if k in {'Besteltijd', 'Loods'}])
+            # --- EINDE AANPASSING ---
+        
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
             tekst = f"--- VERWIJDERD: '{s_naam}'\n"
             tekst += f" - (Was type {details.get('Type', 'N/A')}, Besteltijd {details.get('Besteltijd', 'N/A')})"
+
         body.append(tekst)
-    return "\n\n".join(body)
+    
+    # Filter lege strings eruit (kan gebeuren als een 'GEWIJZIGD' nu geen relevante data meer heeft)
+    return "\n\n".join(filter(None, body))
 
 def main():
     """De hoofdfunctie van de scraper, uitgevoerd door de cron job trigger."""
