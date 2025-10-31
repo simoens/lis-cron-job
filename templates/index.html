@@ -46,12 +46,12 @@
         
         .header-buttons {
             float: right;
-            display: flex;
-            gap: 10px;
-            align-items: center;
+            display: flex; /* Gebruik flexbox voor perfecte uitlijning */
+            gap: 10px; /* Ruimte tussen de knoppen */
+            align-items: center; /* Lijn ze verticaal in het midden uit */
         }
         .header-buttons form {
-            margin: 0;
+            margin: 0; /* Verwijder default form margin */
         }
         
         .button {
@@ -130,10 +130,9 @@
             text-decoration: underline;
         }
         
-        /* --- START AANPASSING: NIEUWE KLEUREN --- */
         /* Groene achtergrond voor toegewezen loods */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
-            background-color: #dff0d8; /* Zachtgroen */
+            background-color: #dff0d8; /* Lichtgroen */
             font-weight: 500; 
         }
         /* Oranje voor <1u in toekomst (zonder loods) */
@@ -146,7 +145,6 @@
             background-color: #ffebee; /* Zachtrood */
             font-weight: 500;
         }
-        /* --- EINDE AANPASSING --- */
         
         /* Wijzigingen */
         .change-item {
@@ -273,7 +271,7 @@
                                     {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
-                                <td>{{ schip.Schip }}</td>
+                                    <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.berekende_eta }}</td>
@@ -304,7 +302,7 @@
                                     {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
-                                <td>{{ schip.Schip }}</td>
+                                    <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                 </tr>
@@ -335,7 +333,7 @@
                                     {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
-                                <td>{{ schip.Schip }}</td>
+                                    <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.get('Exit Point', 'N/A') }}</td>
@@ -359,8 +357,8 @@
                 <p>Wachten op de eerste run...</p>
             {% endif %}
 
-
-            <h2>Recente Wijzigingen (max 10)</h2>
+            
+            <h2>RECENTE WIJZIGINGEN (max 10)</h2>
             {% if changes %}
                 {% for change in changes %}
                     <div class="change-item">
