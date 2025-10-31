@@ -670,7 +670,7 @@ def main():
         return
     
     nieuwe_bestellingen = haal_bestellingen_op(session) 
-    if not newe_bestellingen:
+    if not nieuwe_bestellingen:
         logging.error("Fetching orders failed during main() run.")
         return
 
