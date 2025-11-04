@@ -93,6 +93,7 @@
             padding-left: 15px;
             margin-top: 25px;
             margin-bottom: 10px;
+            /* Stijlen van H1 overgenomen */
             font-weight: 400;
             text-transform: uppercase;
             letter-spacing: 1.5px;
@@ -106,6 +107,7 @@
             color: #343a40; /* Donkere tekst voor contrast */
             padding: 8px 10px; /* Padding voor 'pill' effect */
             border-radius: 5px; /* Afgeronde hoeken */
+            /* Stijlen van H1 overgenomen */
             font-weight: 400;
             text-transform: uppercase;
             letter-spacing: 1.5px;
@@ -143,30 +145,29 @@
         }
         
         /* === START AANPASSING: NIEUWE KLEUREN CSS === */
-        /* Groene achtergrond voor toegewezen loods */
+        /* Groen (voorrang) */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
             background-color: #dff0d8; /* Zachtgroen */
             font-weight: 500; 
         }
-        /* Oranje voor <90m (was <1u) */
+        /* Oranje (<90m) */
         tr.status-due-soon, tr.status-due-soon:nth-child(even) {
             background-color: #fff3e0; /* Zachtoranje */
             font-weight: 500;
-            /* GEEN animatie meer */
         }
-        /* Rood KNIPPEREND voor <60m */
+        /* Rood Knipperend (<60m) */
         tr.status-warning-soon, tr.status-warning-soon:nth-child(even) {
             background-color: #ffebee; /* Zachtrood */
             font-weight: 500;
-            animation: pulse-red 2s ease-in-out infinite; /* Langzamere "adem" animatie */
+            animation: pulse-red 2s ease-in-out infinite;
         }
-        /* Rood VAST voor verleden */
+        /* Rood Vast (verleden) */
         tr.status-past-due, tr.status-past-due:nth-child(even) {
-            background-color: #ffcdd2; /* Iets donkerder rood */
+            background-color: #ffcdd2; /* Donkerder zachtrood */
             font-weight: 500;
         }
         /* === EINDE AANPASSING === */
-
+        
         /* Wijzigingen */
         .change-item {
             background-color: #fdfdfd;
