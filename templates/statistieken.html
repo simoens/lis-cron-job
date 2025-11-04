@@ -174,7 +174,7 @@
                     <p><strong>Inkomend:</strong> {{ stats.total_incoming }}</p>
                     <p><strong>Uitgaand:</strong> {{ stats.total_outgoing }}</p>
                     <p><strong>Shifting:</strong> {{ stats.total_shifting }}</p>
-                    </div>
+                </div>
                 
                 <div class="stat-card">
                     <h3>Meest Gewijzigde Schepen</h3>
@@ -191,8 +191,8 @@
             </div>
 
             <hr>
-
-            <h3>VERVROEGDE BESTELTIJDEN (UITGAAND/SHIFTING)</h3>
+            
+            <h3>VERVROEGDE BESTELTIJDEN (UITGAAND)</h3>
             {% if stats.vervroegd %}
                 <table>
                     <thead>
@@ -218,7 +218,7 @@
                 <p>Geen vervroegde schepen gevonden.</p>
             {% endif %}
 
-            <h3>VERTRAAGDE BESTELTIJDEN (UITGAAND/SHIFTING)</h3>
+            <h3>VERTRAAGDE BESTELTIJDEN (UITGAAND)</h3>
             {% if stats.vertraagd %}
                 <table>
                     <thead>
@@ -244,7 +244,7 @@
                 <p>Geen vertraagde schepen gevonden.</p>
             {% endif %}
             
-            <h3>SCHEPEN OP TIJD VERTROKKEN (UITGAAND/SHIFTING)</h3>
+            <h3>SCHEPEN OP TIJD VERTROKKEN (UITGAAND)</h3>
             {% if stats.op_tijd %}
                 <table>
                     <thead>
