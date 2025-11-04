@@ -464,25 +464,28 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
     for b in bestellingen:
         try:
-            # --- START AANPASSING: Strikte "Besteltijd" Check ---
-            besteltijd_str_raw = b.get("Besteltijd")
-            # 1. ALS HET VELD 'BESTELTIJD' LEEG IS, SLA HET SCHIP OVER.
-            if not besteltijd_str_raw:
-                continue
-            # --- EINDE AANPASSING ---
-
             entry_point = b.get('Entry Point', '').lower()
             exit_point = b.get('Exit Point', '').lower()
             if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
                 continue 
             
+            besteltijd_str_raw = b.get("Besteltijd")
+            # --- START AANPASSING: Strikte "Besteltijd" Check ---
+            # 1. ALS HET VELD 'BESTELTIJD' LEEG IS, SLA HET SCHIP OVER.
+            if not besteltijd_str_raw:
+                continue
+            # --- EINDE AANPASSING ---
+
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
             besteltijd_aware = None
             is_sluisplanning = False
 
             # 2. BEPAAL OF HET EEN DATUM IS OF 'SLUISPLANNING'
             if besteltijd_naive.year == 1970:
-                is_sluisplanning = True # Dit is 'Sluisplanning' of andere ongeldige tekst
+                if "sluisplanning" in besteltijd_str_raw.lower():
+                    is_sluisplanning = True
+                else:
+                    continue # Sla andere ongeldige data over (zoals lege strings die de helper negeert)
             else:
                 besteltijd_aware = brussels_tz.localize(besteltijd_naive)
             
@@ -493,14 +496,21 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if not loods_toegewezen:
                 tijd_om_te_checken = None
                 
-                if schip_type == "I": 
+                if schip_type == "I": # Inkomend
                     if not is_sluisplanning:
                         tijd_om_te_checken = besteltijd_aware
-                else: 
+                else: # Uitgaand (U) en Shifting (V)
+                    # --- START AANPASSING: Fallback naar Besteltijd ---
                     eta_etd_str = b.get("ETA/ETD")
                     eta_etd_naive = parse_besteltijd(eta_etd_str)
+                    
                     if eta_etd_naive.year != 1970:
+                        # We hebben een geldige ETA/ETD, gebruik die
                         tijd_om_te_checken = brussels_tz.localize(eta_etd_naive)
+                    elif not is_sluisplanning:
+                        # Geen ETA/ETD, val terug op Besteltijd (als het geen sluisplanning is)
+                        tijd_om_te_checken = besteltijd_aware
+                    # --- EINDE AANPASSING ---
 
                 if tijd_om_te_checken:
                     time_diff_seconds = (tijd_om_te_checken - nu).total_seconds()
@@ -522,7 +532,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     show_ship = True
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_uit_toekomst):
                     show_ship = True
-                # De 'extra' ETA/ETD check is hier verwijderd
 
                 if show_ship:
                     gefilterd["UITGAAND"].append(b)
