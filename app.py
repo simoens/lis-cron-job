@@ -245,13 +245,20 @@ def statistieken():
         
     # --- Stat 3: Top 5 Gewijzigde Schepen ---
     ship_counter = Counter()
-    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
+    
+    # --- START AANPASSING: SLIMMERE REGEX ---
+    # Zoekt: 'NAAM' (van NIEUW/VERWIJDERD) OF 'NAAM' (van GEWIJZIGD)
+    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'|'([^']+)' \(Type: .*\)", re.MULTILINE)
+    
     for change in changes:
         if change.content:
-            ship_names = ship_regex.findall(change.content)
-            for name in ship_names:
+            matches = ship_regex.findall(change.content)
+            for match in matches:
+                # findall() retourneert een tuple (groep1, groep2). Een van de twee is leeg.
+                name = match[0] or match[1] # Pak de naam die niet leeg is
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
+    # --- EINDE AANPASSING ---
 
     # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) ---
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
@@ -260,40 +267,47 @@ def statistieken():
     ship_final_time = {}
 
     for change in changes:
-        if change.content:
-            ship_name_match = ship_regex.search(change.content)
-            if not ship_name_match:
-                continue
-            ship_name = ship_name_match.group(1).strip()
-            besteltijd_match = besteltijd_regex.search(change.content)
-            if not besteltijd_match:
-                continue
-                
-            oud_tijd_str = besteltijd_match.group(1)
-            nieuw_tijd_str = besteltijd_match.group(2)
-            
-            try:
-                oud_tijd = parse_besteltijd(oud_tijd_str)
-                nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
-                
-                if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
-                    continue 
+        # --- START AANPASSING: FILTER OP UITGAAND ---
+        # Sla deze wijziging over als het NIET specifiek (Type: U) is
+        if "' (Type: U)" not in change.content:
+            continue
+        # --- EINDE AANPASSING ---
 
-                if ship_name not in ship_times:
-                    ship_times[ship_name] = []
-                    ship_first_time[ship_name] = oud_tijd
-                
-                ship_times[ship_name].append(oud_tijd)
-                ship_times[ship_name].append(nieuw_tijd)
-                ship_final_time[ship_name] = nieuw_tijd 
-                
-            except Exception:
+        # Zoek de scheepsnaam die hoort bij (Type: U)
+        ship_name_match = re.search(r"'([^']+)' \(Type: U\)", change.content)
+        if not ship_name_match:
+            continue
+        ship_name = ship_name_match.group(1).strip()
+        
+        # Zoek naar een 'Besteltijd' wijziging
+        besteltijd_match = besteltijd_regex.search(change.content)
+        if not besteltijd_match:
+            continue
+            
+        oud_tijd_str = besteltijd_match.group(1)
+        nieuw_tijd_str = besteltijd_match.group(2)
+        
+        try:
+            oud_tijd = parse_besteltijd(oud_tijd_str)
+            nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
+            
+            if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
                 continue 
 
-    # --- START AANPASSING: Sortering en Nieuwe Categorie ---
+            if ship_name not in ship_times:
+                ship_times[ship_name] = []
+                ship_first_time[ship_name] = oud_tijd
+            
+            ship_times[ship_name].append(oud_tijd)
+            ship_times[ship_name].append(nieuw_tijd)
+            ship_final_time[ship_name] = nieuw_tijd 
+            
+        except Exception:
+            continue 
+
     vervroegd_lijst = []
     vertraagd_lijst = []
-    op_tijd_lijst = [] # Nieuwe lijst
+    op_tijd_lijst = [] 
 
     for ship_name in ship_times:
         eerste_tijd = ship_first_time[ship_name]
@@ -310,7 +324,7 @@ def statistieken():
             "eerste_tijd": eerste_tijd.strftime('%d/%m %H:%M'),
             "laatste_tijd": laatste_tijd.strftime('%d/%m %H:%M'),
             "delta_str": delta_str,
-            "delta_raw": delta_seconds # Voeg raw data toe voor sortering
+            "delta_raw": delta_seconds 
         }
         
         if delta_seconds > 0: 
@@ -318,13 +332,10 @@ def statistieken():
         elif delta_seconds < 0: 
             vervroegd_lijst.append(result_data)
         else:
-            # Delta is 0, voeg toe aan de 'op tijd' lijst
             op_tijd_lijst.append(result_data)
 
-    # Sorteer de lijsten aflopend op de *grootte* van de wijziging
     vervroegd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
     vertraagd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
-    # --- EINDE AANPASSING ---
 
     stats = {
         "total_changes": total_changes,
@@ -333,7 +344,7 @@ def statistieken():
         "top_ships": top_ships,
         "vervroegd": vervroegd_lijst, 
         "vertraagd": vertraagd_lijst,
-        "op_tijd": op_tijd_lijst # Geef de nieuwe lijst door
+        "op_tijd": op_tijd_lijst
     }
     
     return render_template('statistieken.html', 
@@ -614,18 +625,15 @@ def vergelijk_bestellingen(oude, nieuwe):
         if diff:
             gewijzigde_sleutels = set(diff.keys())
             
-            # --- START AANPASSING ---
-            # De oude check voor 'Type == I' is verwijderd.
-            # We definiëren 'relevante' wijzigingen nu ZONDER 'ETA/ETD'.
             relevante = {'Besteltijd', 'Loods'}
-            # --- EINDE AANPASSING ---
 
             if relevante.intersection(gewijzigde_sleutels): 
                 if moet_rapporteren(n_best) or moet_rapporteren(o_best):
                     wijzigingen.append({
                         'Schip': n_best.get('Schip'),
                         'status': 'GEWIJZIGD',
-                        'wijzigingen': diff
+                        'wijzigingen': diff,
+                        'type': n_best.get('Type') # <-- HIER IS DE AANPASSING
                     })
             
     return wijzigingen
@@ -647,9 +655,11 @@ def format_wijzigingen_email(wijzigingen):
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
         
         elif status == 'GEWIJZIGD':
-            tekst = f"'{s_naam}'\n"
+            # --- START AANPASSING ---
+            # Voeg het Type toe aan de header
+            tekst = f"'{s_naam}' (Type: {w.get('type', '?')})\n"
+            # --- EINDE AANPASSING ---
             
-            # --- START AANPASSING: Compactere tekst ---
             relevante_diffs = []
             for k, v in w['wijzigingen'].items():
                 if k == 'Loods':
@@ -658,13 +668,11 @@ def format_wijzigingen_email(wijzigingen):
                     elif not v['nieuw'] and v['oud']:
                         relevante_diffs.append(f" - LOODS VERWIJDERD")
                     else:
-                        # Fallback voor een complexe wijziging (bv. Loods A -> Loods B)
                         relevante_diffs.append(f" - Loods: '{v['oud']}' -> '{v['nieuw']}'")
                 elif k == 'Besteltijd':
                     relevante_diffs.append(f" - Besteltijd: '{v['oud']}' -> '{v['nieuw']}'")
             
             tekst += "\n".join(relevante_diffs)
-            # --- EINDE AANPASSING ---
         
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
@@ -673,7 +681,6 @@ def format_wijzigingen_email(wijzigingen):
 
         body.append(tekst)
     
-    # Filter lege strings eruit (kan gebeuren als een 'GEWIJZIGD' nu geen relevante data meer heeft)
     return "\n\n".join(filter(None, body))
 
 def main():
