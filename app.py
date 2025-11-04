@@ -40,7 +40,8 @@ class DetectedChange(db.Model):
     timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     onderwerp = db.Column(db.String(200))
     content = db.Column(db.Text)
-    type = db.Column(db.String(10)) # <-- HIER IS DE NIEUWE KOLOM (voor 'I', 'U', 'V')
+    # --- NIEUWE KOLOM (vorige keer toegevoegd) ---
+    type = db.Column(db.String(10)) 
 
 class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -54,6 +55,7 @@ def load_state_for_comparison():
     """Laadt alleen de data die nodig is voor de *volgende* run."""
     logging.info("Oude staat (voor vergelijking) wordt geladen uit PostgreSQL...")
     try:
+        # --- FIX: Zorg dat we de juiste sleutel 'bestellingen' gebruiken ---
         bestellingen_obj = KeyValueStore.query.get('bestellingen')
         vorige_staat = {
             "bestellingen": bestellingen_obj.value if bestellingen_obj else []
@@ -347,7 +349,8 @@ def parse_besteltijd(besteltijd_str):
         cleaned_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
         return datetime.strptime(cleaned_str, "%d/%m/%y %H:%M")
     except ValueError:
-        logging.warning(f"Kon besteltijd '{besteltijd_str}' niet parsen (bv. 'Sluisplanning'). Wordt genegeerd in sortering.")
+        # We loggen dit niet meer, want 'Sluisplanning' is normaal
+        # logging.warning(f"Kon besteltijd '{besteltijd_str}' niet parsen (bv. 'Sluisplanning'). Wordt genegeerd in sortering.")
         return DEFAULT_TIME
 
 # --- SCRAPER FUNCTIES ---
@@ -696,16 +699,18 @@ def main():
             onderwerp = f"{len(wijzigingen)} wijziging(en)"
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
             
+            # --- START AANPASSING: Sla 'type' op in DB ---
             for w in wijzigingen: # Loop door de wijzigingen om ze individueel op te slaan
                 new_change_entry = DetectedChange(
                     timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None),
                     onderwerp=onderwerp,
                     content=format_wijzigingen_email([w]), # Formatteer elke wijziging apart
-                    type=w.get('type') # <-- HIER SLAAN WE HET TYPE OP
+                    type=w.get('details', {}).get('Type') if w.get('status') == 'NIEUW' else w.get('type') # Sla 'type' op
                 )
                 db.session.add(new_change_entry)
             
             logging.info(f"{len(wijzigingen)} nieuwe wijziging rijen toegevoegd aan 'detected_change' tabel.")
+            # --- EINDE AANPASSING ---
         else:
             logging.info("No relevant changes found.")
     else:
