@@ -40,6 +40,7 @@ class DetectedChange(db.Model):
     timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     onderwerp = db.Column(db.String(200))
     content = db.Column(db.Text)
+    type = db.Column(db.String(10)) # <-- HIER IS DE NIEUWE KOLOM (voor 'I', 'U', 'V')
 
 class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -164,8 +165,6 @@ def logboek():
     all_changes_query = DetectedChange.query.all()
     
     # --- START BUGFIX: SLIMMERE REGEX ---
-    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'',
-    # of 'NAAM' (aan het begin van een regel, voor GEWIJZIGD)
     ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     unique_ships = set()
     
@@ -206,6 +205,8 @@ def statistieken():
     nu_brussels = datetime.now(brussels_tz)
     seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
+    # --- Haal alle benodigde data op ---
+    # We halen GEWIJZIGDE items op, gesorteerd op tijd
     changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
     ).order_by(DetectedChange.timestamp.asc()).all() 
@@ -214,10 +215,10 @@ def statistieken():
         Snapshot.timestamp >= seven_days_ago_utc
     ).all()
 
-    # Stat 1: Totaal Wijzigingen
+    # --- Stat 1: Totaal Wijzigingen ---
     total_changes = len(changes)
 
-    # Stat 2: Huidige Snapshot data
+    # --- Stat 2: Huidige Snapshot data ---
     total_incoming = 0
     total_outgoing = 0
     total_shifting = 0
@@ -229,7 +230,6 @@ def statistieken():
         
     # --- Stat 3: Top 5 Gewijzigde Schepen (BUGFIX) ---
     ship_counter = Counter()
-    # Deze regex vindt de naam, of het nu NIEUW, VERWIJDERD of GEWIJZIGD is
     ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     
     for change in changes:
@@ -242,23 +242,24 @@ def statistieken():
 
     # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) (BUGFIX) ---
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
-    # Regex om *enkel* 'GEWIJZIGD' schepen te vinden (excl. Nieuw/Verwijderd)
-    # en *enkel* Type U (Uitgaand) of V (Shifting)
-    ship_regex_stat4 = re.compile(r"^\'([^']+)\' \(Type: ([UV])\)", re.MULTILINE) 
+    ship_name_regex = re.compile(r"^\'([^']+)\'", re.MULTILINE) # Simpele regex voor de naam
     
     ship_times = {} 
     ship_first_time = {}
     ship_final_time = {}
 
-    for change in changes:
-        # Check voor 'GEWIJZIGD' Type U of V
-        ship_name_match = ship_regex_stat4.search(change.content)
-        if not ship_name_match:
-            continue # Sla over (is NIEUW, VERWIJDERD, of Type I)
+    # Query nu op de NIEUWE 'type' kolom!
+    uitgaande_wijzigingen = DetectedChange.query.filter(
+        DetectedChange.timestamp >= seven_days_ago_utc,
+        DetectedChange.type.in_(['U', 'V']) # <-- De 100% betrouwbare filter
+    ).order_by(DetectedChange.timestamp.asc()).all()
 
+    for change in uitgaande_wijzigingen:
+        ship_name_match = ship_name_regex.search(change.content)
+        if not ship_name_match:
+            continue
         ship_name = ship_name_match.group(1).strip()
         
-        # Zoek naar een 'Besteltijd' wijziging in dit blok
         besteltijd_match = besteltijd_regex.search(change.content)
         if not besteltijd_match:
             continue
@@ -634,7 +635,9 @@ def format_wijzigingen_email(wijzigingen):
             tekst += f" - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
         elif status == 'GEWIJZIGD':
+            # --- START BUGFIX: Type-tag toevoegen ---
             tekst = f"'{s_naam}' (Type: {w.get('type', '?')})\n"
+            # --- EINDE BUGFIX ---
             relevante_diffs = []
             for k, v in w['wijzigingen'].items():
                 if k == 'Loods':
@@ -692,13 +695,17 @@ def main():
             inhoud = format_wijzigingen_email(wijzigingen)
             onderwerp = f"{len(wijzigingen)} wijziging(en)"
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
-            new_change_entry = DetectedChange(
-                timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None),
-                onderwerp=onderwerp,
-                content=inhoud
-            )
-            db.session.add(new_change_entry)
-            logging.info("Nieuwe wijziging rij toegevoegd aan 'detected_change' tabel.")
+            
+            for w in wijzigingen: # Loop door de wijzigingen om ze individueel op te slaan
+                new_change_entry = DetectedChange(
+                    timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None),
+                    onderwerp=onderwerp,
+                    content=format_wijzigingen_email([w]), # Formatteer elke wijziging apart
+                    type=w.get('type') # <-- HIER SLAAN WE HET TYPE OP
+                )
+                db.session.add(new_change_entry)
+            
+            logging.info(f"{len(wijzigingen)} nieuwe wijziging rijen toegevoegd aan 'detected_change' tabel.")
         else:
             logging.info("No relevant changes found.")
     else:
