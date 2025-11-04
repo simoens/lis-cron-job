@@ -318,8 +318,8 @@
                                     <th style="width: 30%;">SCHIP</th>
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
-                                    <th style="width: 30%;">BESTEMMING</th>
-                                </tr>
+                                    <th style="width: 30%;">ETA/ETD</th>
+                                    </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
@@ -332,8 +332,8 @@
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
-                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
-                                </tr>
+                                    <td>{{ schip.get('ETA/ETD', 'N/A') }}</td>
+                                    </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
