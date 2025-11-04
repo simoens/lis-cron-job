@@ -144,7 +144,6 @@
         tr:nth-child(even) {
             background-color: #f9f9f9;
         }
-        /* De .in-past stijl is VERWIJDERD */
     </style>
 </head>
 <body>
@@ -171,10 +170,11 @@
 
                 <div class="stat-card">
                     <h3>Schepen (huidige snapshot)</h3>
-                    <div class="value">{{ stats.total_incoming + stats.total_outgoing }}</div>
+                    <div class="value">{{ stats.total_incoming + stats.total_outgoing + stats.total_shifting }}</div>
                     <p><strong>Inkomend:</strong> {{ stats.total_incoming }}</p>
                     <p><strong>Uitgaand:</strong> {{ stats.total_outgoing }}</p>
-                </div>
+                    <p><strong>Shifting:</strong> {{ stats.total_shifting }}</p>
+                    </div>
                 
                 <div class="stat-card">
                     <h3>Meest Gewijzigde Schepen</h3>
@@ -192,7 +192,7 @@
 
             <hr>
 
-            <h3>VERVROEGDE BESTELTIJDEN (UITGAAND)</h3>
+            <h3>VERVROEGDE BESTELTIJDEN (UITGAAND/SHIFTING)</h3>
             {% if stats.vervroegd %}
                 <table>
                     <thead>
@@ -218,7 +218,7 @@
                 <p>Geen vervroegde schepen gevonden.</p>
             {% endif %}
 
-            <h3>VERTRAAGDE BESTELTIJDEN (UITGAAND)</h3>
+            <h3>VERTRAAGDE BESTELTIJDEN (UITGAAND/SHIFTING)</h3>
             {% if stats.vertraagd %}
                 <table>
                     <thead>
@@ -244,7 +244,7 @@
                 <p>Geen vertraagde schepen gevonden.</p>
             {% endif %}
             
-            <h3>SCHEPEN OP TIJD VERTROKKEN (UITGAAND)</h3>
+            <h3>SCHEPEN OP TIJD VERTROKKEN (UITGAAND/SHIFTING)</h3>
             {% if stats.op_tijd %}
                 <table>
                     <thead>
@@ -267,7 +267,8 @@
             {% else %}
                 <p>Geen schepen gevonden zonder besteltijd-wijziging.</p>
             {% endif %}
-            </div>
+
+        </div>
     </div>
 
 </body>
