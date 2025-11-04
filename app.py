@@ -164,21 +164,38 @@ def status_check():
 @app.route('/logboek')
 def logboek():
     """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
+    
     search_term = request.args.get('q', '')
     
+    # --- START AANPASSING: SLIMMERE REGEX ---
+    
+    # 1. Haal *alle* wijzigingen op uit de database
     all_changes_query = DetectedChange.query.all()
-    ship_regex = re.compile(r"(?:NIEUW SCHIP|GEWIJZIGD|VERWIJDERD): '([^']+)'")
+    
+    # 2. Deze regex zoekt nu naar:
+    #    - '+++ NIEUW SCHIP: 'NAAM''
+    #    - '--- VERWIJDERD: 'NAAM''
+    #    - 'NAAM' (aan het begin van een regel, voor GEWIJZIGD)
+    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
+    
+    # 3. Gebruik een 'set' om duplicaten te verwijderen
     unique_ships = set()
     
+    # 4. Loop door alle wijzigingen en verzamel de namen
     for change in all_changes_query:
         if change.content:
             ship_names_found = ship_regex.findall(change.content)
             for name in ship_names_found:
                 unique_ships.add(name.strip()) 
                 
+    # 5. Converteer naar een alfabetische lijst
     all_ships_sorted = sorted(list(unique_ships))
     
+    # --- EINDE AANPASSING ---
+
+    # Bestaande logica voor het filteren van resultaten
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
+    
     if search_term:
         query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
     
@@ -206,6 +223,7 @@ def statistieken():
     nu_brussels = datetime.now(brussels_tz)
     seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
+    # --- Haal alle benodigde data op ---
     changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
     ).order_by(DetectedChange.timestamp.asc()).all() 
@@ -214,10 +232,10 @@ def statistieken():
         Snapshot.timestamp >= seven_days_ago_utc
     ).all()
 
-    # Stat 1: Totaal Wijzigingen
+    # --- Stat 1: Totaal Wijzigingen ---
     total_changes = len(changes)
 
-    # Stat 2: Huidige Snapshot data
+    # --- Stat 2: Huidige Snapshot data ---
     total_incoming = 0
     total_outgoing = 0
     if snapshots:
@@ -225,53 +243,60 @@ def statistieken():
         total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
         
-    # Stat 3: Top 5 Gewijzigde Schepen
+    # --- Stat 3: Top 5 Gewijzigde Schepen ---
+    
+    # --- START AANPASSING: SLIMMERE REGEX ---
     ship_counter = Counter()
-    ship_regex = re.compile(r"(?:NIEUW SCHIP|GEWIJZIGD|VERWIJDERD): '([^']+)'")
+    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'', of 'NAAM' (aan het begin van een regel)
+    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
+    
     for change in changes:
         if change.content:
             ship_names = ship_regex.findall(change.content)
             for name in ship_names:
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
+    # --- EINDE AANPASSING ---
 
-    # Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand)
+    # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) ---
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
     ship_times = {} 
     ship_first_time = {}
     ship_final_time = {}
 
     for change in changes:
-        if "GEWIJZIGD" not in change.onderwerp:
-            continue
-        ship_name_match = re.search(r"GEWIJZIGD: '([^']+)'", change.content)
-        if not ship_name_match:
-            continue
-        ship_name = ship_name_match.group(1).strip()
-        besteltijd_match = besteltijd_regex.search(change.content)
-        if not besteltijd_match:
-            continue
+        if change.content:
+            # We moeten nu de naam op de nieuwe manier vinden
+            ship_name_match = ship_regex.search(change.content) # Gebruik search() om de eerste te vinden
+            if not ship_name_match:
+                continue
+            ship_name = ship_name_match.group(1).strip()
             
-        oud_tijd_str = besteltijd_match.group(1)
-        nieuw_tijd_str = besteltijd_match.group(2)
-        
-        try:
-            oud_tijd = parse_besteltijd(oud_tijd_str)
-            nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
+            # Zoek nu naar een 'Besteltijd' wijziging
+            besteltijd_match = besteltijd_regex.search(change.content)
+            if not besteltijd_match:
+                continue
+                
+            oud_tijd_str = besteltijd_match.group(1)
+            nieuw_tijd_str = besteltijd_match.group(2)
             
-            if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
-                continue 
+            try:
+                oud_tijd = parse_besteltijd(oud_tijd_str)
+                nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
+                
+                if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
+                    continue 
 
-            if ship_name not in ship_times:
-                ship_times[ship_name] = []
-                ship_first_time[ship_name] = oud_tijd
-            
-            ship_times[ship_name].append(oud_tijd)
-            ship_times[ship_name].append(nieuw_tijd)
-            ship_final_time[ship_name] = nieuw_tijd 
-            
-        except Exception:
-            continue 
+                if ship_name not in ship_times:
+                    ship_times[ship_name] = []
+                    ship_first_time[ship_name] = oud_tijd
+                
+                ship_times[ship_name].append(oud_tijd)
+                ship_times[ship_name].append(nieuw_tijd)
+                ship_final_time[ship_name] = nieuw_tijd 
+                
+            except Exception:
+                continue 
 
     vervroegd_lijst = []
     vertraagd_lijst = []
