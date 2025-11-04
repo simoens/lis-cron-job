@@ -244,19 +244,14 @@ def statistieken():
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
         
     # --- Stat 3: Top 5 Gewijzigde Schepen ---
-    
-    # --- START AANPASSING: SLIMMERE REGEX ---
     ship_counter = Counter()
-    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'', of 'NAAM' (aan het begin van een regel)
     ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
-    
     for change in changes:
         if change.content:
             ship_names = ship_regex.findall(change.content)
             for name in ship_names:
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
-    # --- EINDE AANPASSING ---
 
     # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) ---
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
@@ -266,13 +261,10 @@ def statistieken():
 
     for change in changes:
         if change.content:
-            # We moeten nu de naam op de nieuwe manier vinden
-            ship_name_match = ship_regex.search(change.content) # Gebruik search() om de eerste te vinden
+            ship_name_match = ship_regex.search(change.content)
             if not ship_name_match:
                 continue
             ship_name = ship_name_match.group(1).strip()
-            
-            # Zoek nu naar een 'Besteltijd' wijziging
             besteltijd_match = besteltijd_regex.search(change.content)
             if not besteltijd_match:
                 continue
@@ -298,17 +290,17 @@ def statistieken():
             except Exception:
                 continue 
 
+    # --- START AANPASSING: Sortering en Nieuwe Categorie ---
     vervroegd_lijst = []
     vertraagd_lijst = []
+    op_tijd_lijst = [] # Nieuwe lijst
+
     for ship_name in ship_times:
         eerste_tijd = ship_first_time[ship_name]
         laatste_tijd = ship_final_time[ship_name]
         
         delta_seconds = (laatste_tijd - eerste_tijd).total_seconds()
         
-        if delta_seconds == 0:
-            continue
-            
         hours, remainder = divmod(abs(delta_seconds), 3600)
         minutes, _ = divmod(remainder, 60)
         delta_str = f"{int(hours)}u {int(minutes)}m"
@@ -317,17 +309,22 @@ def statistieken():
             "ship_name": ship_name,
             "eerste_tijd": eerste_tijd.strftime('%d/%m %H:%M'),
             "laatste_tijd": laatste_tijd.strftime('%d/%m %H:%M'),
-            "delta_str": delta_str
+            "delta_str": delta_str,
+            "delta_raw": delta_seconds # Voeg raw data toe voor sortering
         }
-
-        is_in_verleden = brussels_tz.localize(laatste_tijd) < nu_brussels
         
         if delta_seconds > 0: 
-            result_data["is_in_verleden"] = is_in_verleden
             vertraagd_lijst.append(result_data)
-        else: 
-            result_data["is_in_verleden"] = is_in_verleden
+        elif delta_seconds < 0: 
             vervroegd_lijst.append(result_data)
+        else:
+            # Delta is 0, voeg toe aan de 'op tijd' lijst
+            op_tijd_lijst.append(result_data)
+
+    # Sorteer de lijsten aflopend op de *grootte* van de wijziging
+    vervroegd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
+    vertraagd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
+    # --- EINDE AANPASSING ---
 
     stats = {
         "total_changes": total_changes,
@@ -335,7 +332,8 @@ def statistieken():
         "total_outgoing": total_outgoing,
         "top_ships": top_ships,
         "vervroegd": vervroegd_lijst, 
-        "vertraagd": vertraagd_lijst
+        "vertraagd": vertraagd_lijst,
+        "op_tijd": op_tijd_lijst # Geef de nieuwe lijst door
     }
     
     return render_template('statistieken.html', 
