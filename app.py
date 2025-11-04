@@ -464,16 +464,23 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
     for b in bestellingen:
         try:
+            # --- START AANPASSING: Strikte "Besteltijd" Check ---
+            besteltijd_str_raw = b.get("Besteltijd")
+            # 1. ALS HET VELD 'BESTELTIJD' LEEG IS, SLA HET SCHIP OVER.
+            if not besteltijd_str_raw:
+                continue
+            # --- EINDE AANPASSING ---
+
             entry_point = b.get('Entry Point', '').lower()
             exit_point = b.get('Exit Point', '').lower()
             if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
                 continue 
             
-            besteltijd_str_raw = b.get("Besteltijd")
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
             besteltijd_aware = None
             is_sluisplanning = False
 
+            # 2. BEPAAL OF HET EEN DATUM IS OF 'SLUISPLANNING'
             if besteltijd_naive.year == 1970:
                 is_sluisplanning = True # Dit is 'Sluisplanning' of andere ongeldige tekst
             else:
@@ -482,14 +489,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             status_flag = "normal" 
             loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
             schip_type = b.get("Type")
-            
-            # Bepaal ETA/ETD vast voor de kleurlogica
-            eta_etd_aware = None
-            if schip_type == "U" or schip_type == "V":
-                eta_etd_str = b.get("ETA/ETD")
-                eta_etd_naive = parse_besteltijd(eta_etd_str)
-                if eta_etd_naive.year != 1970:
-                    eta_etd_aware = brussels_tz.localize(eta_etd_naive)
 
             if not loods_toegewezen:
                 tijd_om_te_checken = None
@@ -498,7 +497,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     if not is_sluisplanning:
                         tijd_om_te_checken = besteltijd_aware
                 else: 
-                    tijd_om_te_checken = eta_etd_aware # Is None als ETA/ETD leeg is
+                    eta_etd_str = b.get("ETA/ETD")
+                    eta_etd_naive = parse_besteltijd(eta_etd_str)
+                    if eta_etd_naive.year != 1970:
+                        tijd_om_te_checken = brussels_tz.localize(eta_etd_naive)
 
                 if tijd_om_te_checken:
                     time_diff_seconds = (tijd_om_te_checken - nu).total_seconds()
@@ -513,32 +515,21 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             b['status_flag'] = status_flag
             
             # --- START FILTERLOGICA ---
+            show_ship = False
             
             if schip_type == "U":
-                show_ship = False
-                
-                # 1. Toon als het 'Sluisplanning' is
                 if is_sluisplanning:
                     show_ship = True
-                
-                # 2. Toon als besteltijd binnen de 16u-window valt
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_uit_toekomst):
                     show_ship = True
-                
-                # 3. (NIEUW) Toon ook als ETA/ETD later is dan besteltijd én nog in de toekomst ligt
-                elif eta_etd_aware and besteltijd_aware and (eta_etd_aware > besteltijd_aware) and (eta_etd_aware > nu):
-                    show_ship = True
+                # De 'extra' ETA/ETD check is hier verwijderd
 
                 if show_ship:
                     gefilterd["UITGAAND"].append(b)
                     
             elif schip_type == "I": 
-                show_ship = False
-                
-                # 1. Toon als het 'Sluisplanning' is
                 if is_sluisplanning:
                     show_ship = True
-                # 2. Toon als besteltijd binnen de -8u/+8u window valt
                 elif besteltijd_aware and (grens_in_verleden <= besteltijd_aware <= grens_in_toekomst):
                     show_ship = True
                     
@@ -547,7 +538,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
                     if b['berekende_eta'] == 'N/A':
                         eta_dt = None
-                        if besteltijd_aware: # Alleen berekenen als we een echte besteltijd hebben
+                        if besteltijd_aware: 
                             if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
                             elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
                             if eta_dt:
@@ -556,12 +547,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     gefilterd["INKOMEND"].append(b)
             
             elif schip_type == "V": 
-                show_ship = False
-
-                # 1. Toon als het 'Sluisplanning' is
                 if is_sluisplanning:
                     show_ship = True
-                # 2. Toon als besteltijd binnen de 8u-window valt
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_verplaatsing_toekomst):
                     show_ship = True
 
