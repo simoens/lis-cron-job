@@ -253,7 +253,7 @@ def statistieken():
     # Query nu op de NIEUWE 'type' kolom!
     uitgaande_wijzigingen = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc,
-        DetectedChange.type.in_(['U', 'V']) # <-- De 100% betrouwbare filter
+        DetectedChange.type == 'U' # <-- De 100% betrouwbare filter
     ).order_by(DetectedChange.timestamp.asc()).all()
 
     for change in uitgaande_wijzigingen:
