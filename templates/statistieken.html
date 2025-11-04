@@ -26,8 +26,6 @@
             border-radius: 8px 8px 0 0;
         }
         .header-bar::after { content: ""; display: table; clear: both; }
-
-        /* --- HIER IS DE WIJZIGING --- */
         .header-bar h1 {
             border: none;
             margin: 0;
@@ -38,8 +36,6 @@
             text-transform: uppercase; /* Hoofdletters */
             letter-spacing: 1.5px; /* Ruimte */
         }
-        /* --- EINDE WIJZIGING --- */
-
         .header-bar a {
             color: white;
             text-decoration: none;
@@ -59,8 +55,6 @@
         }
         .button:hover { background-color: #5a6268; }
         .content-box { padding: 10px 30px 30px 30px; }
-        
-        /* --- HIER IS DE WIJZIGING --- */
         h2 {
             font-size: 1.4em;
             border-left: 5px solid #f0c14b;
@@ -85,7 +79,6 @@
             text-transform: uppercase;
             letter-spacing: 1.5px;
         }
-        /* --- EINDE WIJZIGING --- */
         
         /* Stijlen voor statistiek-kaarten */
         .stats-grid {
@@ -151,11 +144,7 @@
         tr:nth-child(even) {
             background-color: #f9f9f9;
         }
-        /* Markeer data in het verleden */
-        .in-past {
-            color: #999;
-            text-decoration: line-through;
-        }
+        /* De .in-past stijl is VERWIJDERD */
     </style>
 </head>
 <body>
@@ -216,7 +205,7 @@
                     </thead>
                     <tbody>
                         {% for item in stats.vervroegd %}
-                            <tr class="{% if item.is_in_verleden %}in-past{% endif %}">
+                            <tr>
                                 <td>{{ item.ship_name }}</td>
                                 <td>{{ item.eerste_tijd }}</td>
                                 <td>{{ item.laatste_tijd }}</td>
@@ -242,7 +231,7 @@
                     </thead>
                     <tbody>
                         {% for item in stats.vertraagd %}
-                            <tr class="{% if item.is_in_verleden %}in-past{% endif %}">
+                            <tr>
                                 <td>{{ item.ship_name }}</td>
                                 <td>{{ item.eerste_tijd }}</td>
                                 <td>{{ item.laatste_tijd }}</td>
@@ -254,8 +243,31 @@
             {% else %}
                 <p>Geen vertraagde schepen gevonden.</p>
             {% endif %}
-
-        </div>
+            
+            <h3>SCHEPEN OP TIJD VERTROKKEN (UITGAAND)</h3>
+            {% if stats.op_tijd %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SCHIP</th>
+                            <th>OORSPRONKELIJKE BESTELTIJD</th>
+                            <th>FINALE BESTELTIJD</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in stats.op_tijd %}
+                            <tr>
+                                <td>{{ item.ship_name }}</td>
+                                <td>{{ item.eerste_tijd }}</td>
+                                <td>{{ item.laatste_tijd }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Geen schepen gevonden zonder besteltijd-wijziging.</p>
+            {% endif %}
+            </div>
     </div>
 
 </body>
