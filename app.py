@@ -656,21 +656,38 @@ def vergelijk_bestellingen(oude, nieuwe):
     return wijzigingen
 
 def format_wijzigingen_email(wijzigingen):
+    """Formatteert de lijst met wijzigingen naar een plain text body."""
     body = []
     wijzigingen.sort(key=lambda x: x.get('status', ''))
+    
+    # --- START AANPASSING: Helper dictionary voor vertaling ---
+    type_vertaling = {
+        'I': 'Inkomend',
+        'U': 'Uitgaand',
+        'V': 'Shifting',
+        '?': '?'
+    }
+    # --- EINDE AANPASSING ---
+    
     for w in wijzigingen:
         s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
         status = w.get('status')
+        
         if status == 'NIEUW':
             details = w.get('details', {})
+            # Gebruik de vertaling
+            type_text = type_vertaling.get(details.get('Type', '?'), '?')
+            
             tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
-            tekst += f" - Type: {details.get('Type', 'N/A')}\n"
+            tekst += f" - Type: {type_text}\n"
             tekst += f" - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
+        
         elif status == 'GEWIJZIGD':
-            # --- START BUGFIX: Type-tag toevoegen ---
-            tekst = f"'{s_naam}' (Type: {w.get('type', '?')})\n"
-            # --- EINDE BUGFIX ---
+            # Gebruik de vertaling
+            type_text = type_vertaling.get(w.get('type', '?'), '?')
+            tekst = f"'{s_naam}' (Type: {type_text})\n"
+            
             relevante_diffs = []
             for k, v in w['wijzigingen'].items():
                 if k == 'Loods':
@@ -682,12 +699,19 @@ def format_wijzigingen_email(wijzigingen):
                         relevante_diffs.append(f" - Loods: '{v['oud']}' -> '{v['nieuw']}'")
                 elif k == 'Besteltijd':
                     relevante_diffs.append(f" - Besteltijd: '{v['oud']}' -> '{v['nieuw']}'")
+            
             tekst += "\n".join(relevante_diffs)
+        
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
+            # Gebruik de vertaling
+            type_text = type_vertaling.get(details.get('Type', '?'), '?')
+            
             tekst = f"--- VERWIJDERD: '{s_naam}'\n"
-            tekst += f" - (Was type {details.get('Type', 'N/A')}, Besteltijd {details.get('Besteltijd', 'N/A')})"
+            tekst += f" - (Was type {type_text}, Besteltijd {details.get('Besteltijd', 'N/A')})"
+
         body.append(tekst)
+    
     return "\n\n".join(filter(None, body))
 
 def main():
