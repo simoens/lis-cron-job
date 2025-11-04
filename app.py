@@ -225,7 +225,7 @@ def statistieken():
         latest_snapshot_data = snapshots[-1].content_data
         total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
-        total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) # Toegevoegd
+        total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) 
         
     # --- Stat 3: Top 5 Gewijzigde Schepen (BUGFIX) ---
     ship_counter = Counter()
@@ -244,7 +244,7 @@ def statistieken():
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
     # Regex om *enkel* 'GEWIJZIGD' schepen te vinden (excl. Nieuw/Verwijderd)
     # en *enkel* Type U (Uitgaand) of V (Shifting)
-    ship_regex_stat4 = re.compile(r"^\'([^']+)\' \(Type: [UV]\)", re.MULTILINE) 
+    ship_regex_stat4 = re.compile(r"^\'([^']+)\' \(Type: ([UV])\)", re.MULTILINE) 
     
     ship_times = {} 
     ship_first_time = {}
@@ -320,7 +320,7 @@ def statistieken():
         "total_changes": total_changes,
         "total_incoming": total_incoming,
         "total_outgoing": total_outgoing,
-        "total_shifting": total_shifting, # Toegevoegd
+        "total_shifting": total_shifting,
         "top_ships": top_ships,
         "vervroegd": vervroegd_lijst, 
         "vertraagd": vertraagd_lijst,
@@ -493,9 +493,9 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     
                     if time_diff_seconds < 0:
                         status_flag = "past_due" # Rood vast
-                    elif time_diff_seconds < 3600: # < 60 minuten
+                    elif time_diff_seconds < 3600: # < 60 minuten (3600s)
                         status_flag = "warning_soon" # Rood knipperend
-                    elif time_diff_seconds < 5400: # < 90 minuten
+                    elif time_diff_seconds < 5400: # < 90 minuten (5400s)
                         status_flag = "due_soon" # Oranje
             
             b['status_flag'] = status_flag
@@ -705,7 +705,7 @@ def main():
         
     state_for_comparison = {
         "bestellingen": nieuwe_bestellingen,
-        "last_report_key": vorige_staat.get("last_report_key", "") # Blijf de oude key doorgeven
+        "last_report_key": vorige_staat.get("last_report_key", "")
     }
     save_state_for_comparison(state_for_comparison)
     
