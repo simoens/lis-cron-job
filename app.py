@@ -229,7 +229,7 @@ def statistieken():
         
     # --- Stat 3: Top 5 Gewijzigde Schepen (BUGFIX) ---
     ship_counter = Counter()
-    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'', of 'NAAM' (aan het begin van een regel)
+    # Deze regex vindt de naam, of het nu NIEUW, VERWIJDERD of GEWIJZIGD is
     ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     
     for change in changes:
@@ -283,6 +283,7 @@ def statistieken():
             
         except Exception:
             continue 
+    # --- EINDE BUGFIX ---
 
     vervroegd_lijst = []
     vertraagd_lijst = []
