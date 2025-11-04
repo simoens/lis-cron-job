@@ -54,8 +54,6 @@ def load_state_for_comparison():
     logging.info("Oude staat (voor vergelijking) wordt geladen uit PostgreSQL...")
     try:
         bestellingen_obj = KeyValueStore.query.get('bestellingen')
-        
-        # 'last_report_key' is hier verwijderd
         vorige_staat = {
             "bestellingen": bestellingen_obj.value if bestellingen_obj else []
         }
@@ -68,18 +66,15 @@ def save_state_for_comparison(state):
     """Slaat alleen de data op die nodig is voor de *volgende* run."""
     logging.info("Nieuwe staat (voor vergelijking) wordt opgeslagen in PostgreSQL...")
     try:
-        # We slaan alleen 'bestellingen' op
         key = 'bestellingen'
         value = state.get(key)
         if value is None:
-            return # Doe niets als er geen bestellingen zijn
+            return 
 
         obj = KeyValueStore.query.get(key)
         if obj:
-            # Update de waarde als het al bestaat
             obj.value = value
         else:
-            # Maak een nieuw item aan als het niet bestaat
             obj = KeyValueStore(key=key, value=value)
             db.session.add(obj)
     except Exception as e:
@@ -140,7 +135,7 @@ def trigger_run():
 @app.route('/force-snapshot', methods=['POST'])
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
-    secret = request.form.get('secret') # Gecorrigeerd: leest uit formulier
+    secret = request.form.get('secret') 
     if secret != os.environ.get('SECRET_KEY'):
         logging.warning("Failed attempt to call /force-snapshot with an invalid secret key.")
         abort(403)
@@ -164,38 +159,26 @@ def status_check():
 @app.route('/logboek')
 def logboek():
     """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
-    
     search_term = request.args.get('q', '')
     
-    # --- START AANPASSING: SLIMMERE REGEX ---
-    
-    # 1. Haal *alle* wijzigingen op uit de database
     all_changes_query = DetectedChange.query.all()
     
-    # 2. Deze regex zoekt nu naar:
-    #    - '+++ NIEUW SCHIP: 'NAAM''
-    #    - '--- VERWIJDERD: 'NAAM''
-    #    - 'NAAM' (aan het begin van een regel, voor GEWIJZIGD)
+    # --- START BUGFIX: SLIMMERE REGEX ---
+    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'',
+    # of 'NAAM' (aan het begin van een regel, voor GEWIJZIGD)
     ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
-    
-    # 3. Gebruik een 'set' om duplicaten te verwijderen
     unique_ships = set()
     
-    # 4. Loop door alle wijzigingen en verzamel de namen
     for change in all_changes_query:
         if change.content:
             ship_names_found = ship_regex.findall(change.content)
             for name in ship_names_found:
                 unique_ships.add(name.strip()) 
                 
-    # 5. Converteer naar een alfabetische lijst
     all_ships_sorted = sorted(list(unique_ships))
+    # --- EINDE BUGFIX ---
     
-    # --- EINDE AANPASSING ---
-
-    # Bestaande logica voor het filteren van resultaten
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
-    
     if search_term:
         query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
     
@@ -223,7 +206,6 @@ def statistieken():
     nu_brussels = datetime.now(brussels_tz)
     seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
-    # --- Haal alle benodigde data op ---
     changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
     ).order_by(DetectedChange.timestamp.asc()).all() 
@@ -232,54 +214,51 @@ def statistieken():
         Snapshot.timestamp >= seven_days_ago_utc
     ).all()
 
-    # --- Stat 1: Totaal Wijzigingen ---
+    # Stat 1: Totaal Wijzigingen
     total_changes = len(changes)
 
-    # --- Stat 2: Huidige Snapshot data ---
+    # Stat 2: Huidige Snapshot data
     total_incoming = 0
     total_outgoing = 0
+    total_shifting = 0
     if snapshots:
         latest_snapshot_data = snapshots[-1].content_data
         total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
+        total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) # Toegevoegd
         
-    # --- Stat 3: Top 5 Gewijzigde Schepen ---
+    # --- Stat 3: Top 5 Gewijzigde Schepen (BUGFIX) ---
     ship_counter = Counter()
-    
-    # --- START AANPASSING: SLIMMERE REGEX ---
-    # Zoekt: 'NAAM' (van NIEUW/VERWIJDERD) OF 'NAAM' (van GEWIJZIGD)
-    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'|'([^']+)' \(Type: .*\)", re.MULTILINE)
+    # Zoekt naar '+++ NIEUW SCHIP: 'NAAM'', '--- VERWIJDERD: 'NAAM'', of 'NAAM' (aan het begin van een regel)
+    ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     
     for change in changes:
         if change.content:
-            matches = ship_regex.findall(change.content)
-            for match in matches:
-                # findall() retourneert een tuple (groep1, groep2). Een van de twee is leeg.
-                name = match[0] or match[1] # Pak de naam die niet leeg is
+            ship_names = ship_regex_top5.findall(change.content)
+            for name in ship_names:
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
-    # --- EINDE AANPASSING ---
+    # --- EINDE BUGFIX ---
 
-    # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) ---
+    # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) (BUGFIX) ---
     besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
+    # Regex om *enkel* 'GEWIJZIGD' schepen te vinden (excl. Nieuw/Verwijderd)
+    # en *enkel* Type U (Uitgaand) of V (Shifting)
+    ship_regex_stat4 = re.compile(r"^\'([^']+)\' \(Type: [UV]\)", re.MULTILINE) 
+    
     ship_times = {} 
     ship_first_time = {}
     ship_final_time = {}
 
     for change in changes:
-        # --- START AANPASSING: FILTER OP UITGAAND ---
-        # Sla deze wijziging over als het NIET specifiek (Type: U) is
-        if "' (Type: U)" not in change.content:
-            continue
-        # --- EINDE AANPASSING ---
-
-        # Zoek de scheepsnaam die hoort bij (Type: U)
-        ship_name_match = re.search(r"'([^']+)' \(Type: U\)", change.content)
+        # Check voor 'GEWIJZIGD' Type U of V
+        ship_name_match = ship_regex_stat4.search(change.content)
         if not ship_name_match:
-            continue
+            continue # Sla over (is NIEUW, VERWIJDERD, of Type I)
+
         ship_name = ship_name_match.group(1).strip()
         
-        # Zoek naar een 'Besteltijd' wijziging
+        # Zoek naar een 'Besteltijd' wijziging in dit blok
         besteltijd_match = besteltijd_regex.search(change.content)
         if not besteltijd_match:
             continue
@@ -341,6 +320,7 @@ def statistieken():
         "total_changes": total_changes,
         "total_incoming": total_incoming,
         "total_outgoing": total_outgoing,
+        "total_shifting": total_shifting, # Toegevoegd
         "top_ships": top_ships,
         "vervroegd": vervroegd_lijst, 
         "vertraagd": vertraagd_lijst,
@@ -462,6 +442,7 @@ def haal_pta_van_reisplan(session, reis_id):
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
         return None
 
+# --- START AANPASSING: Nieuwe Kleurlogica ---
 def filter_snapshot_schepen(bestellingen, session, nu): 
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     
@@ -489,47 +470,55 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             if besteltijd_naive.year == 1970:
                 continue
 
-            besteltijd = brussels_tz.localize(besteltijd_naive)
+            besteltijd_aware = brussels_tz.localize(besteltijd_naive)
             
-            # --- START AANPASSING: STATUSFLAG LOGICA ---
-            status_flag = "normal" # Default
+            status_flag = "normal" 
             loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
+            schip_type = b.get("Type")
 
             if not loods_toegewezen:
-                # Bereken het verschil in seconden tot de besteltijd
-                time_diff_seconds = (besteltijd - nu).total_seconds()
+                # Bepaal de relevante tijd om te checken
+                tijd_om_te_checken = None
                 
-                if time_diff_seconds < 0:
-                    # Besteltijd is in het verleden
-                    status_flag = "past_due" # Rood
-                elif time_diff_seconds < 3600: # 3600 seconden = 1 uur
-                    # Besteltijd is binnen 1 uur in de toekomst
-                    status_flag = "due_soon" # Oranje
+                if schip_type == "I": # Inkomend
+                    tijd_om_te_checken = besteltijd_aware
+                else: # Uitgaand (U) en Shifting (V)
+                    eta_etd_str = b.get("ETA/ETD")
+                    eta_etd_naive = parse_besteltijd(eta_etd_str)
+                    if eta_etd_naive.year != 1970:
+                        tijd_om_te_checken = brussels_tz.localize(eta_etd_naive)
+
+                if tijd_om_te_checken:
+                    time_diff_seconds = (tijd_om_te_checken - nu).total_seconds()
+                    
+                    if time_diff_seconds < 0:
+                        status_flag = "past_due" # Rood vast
+                    elif time_diff_seconds < 3600: # < 60 minuten
+                        status_flag = "warning_soon" # Rood knipperend
+                    elif time_diff_seconds < 5400: # < 90 minuten
+                        status_flag = "due_soon" # Oranje
             
             b['status_flag'] = status_flag
-            # --- EINDE AANPASSING ---
-            
-            schip_type = b.get("Type")
             
             if schip_type == "U": 
-                if nu <= besteltijd <= grens_uit_toekomst:
+                if nu <= besteltijd_aware <= grens_uit_toekomst:
                     gefilterd["UITGAAND"].append(b)
                     
             elif schip_type == "I": 
-                if grens_in_verleden <= besteltijd <= grens_in_toekomst:
+                if grens_in_verleden <= besteltijd_aware <= grens_in_toekomst:
                     pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
                     b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
                     if b['berekende_eta'] == 'N/A':
                         eta_dt = None
-                        if "wandelaar" in entry_point: eta_dt = besteltijd + timedelta(hours=6)
-                        elif "steenbank" in entry_point: eta_dt = besteltijd + timedelta(hours=7)
+                        if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
+                        elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
                         if eta_dt:
                             b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                             
                     gefilterd["INKOMEND"].append(b)
             
             elif schip_type == "V": 
-                if nu <= besteltijd <= grens_verplaatsing_toekomst:
+                if nu <= besteltijd_aware <= grens_verplaatsing_toekomst:
                     gefilterd["VERPLAATSING"].append(b)
                     
         except (ValueError, TypeError) as e:
@@ -541,6 +530,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd["VERPLAATSING"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     
     return gefilterd
+# --- EINDE AANPASSING ---
 
 def filter_dubbele_schepen(bestellingen):
     unieke_schepen = {}
@@ -562,32 +552,24 @@ def filter_dubbele_schepen(bestellingen):
     return list(unieke_schepen.values())
 
 def vergelijk_bestellingen(oude, nieuwe):
-    """Vergelijkt oude en nieuwe bestellijsten."""
-    
     oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
             for b in filter_dubbele_schepen(oude) if b.get('Schip')}
     nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b 
                    for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
-    
     oude_schepen_namen = set(oude_dict.keys())
     nieuwe_schepen_namen = set(nieuwe_dict.keys())
-
     wijzigingen = []
     nu_brussels = datetime.now(pytz.timezone('Europe/Brussels')) 
     brussels_tz = pytz.timezone('Europe/Brussels')
     
     def moet_rapporteren(bestelling):
         besteltijd_str_raw = bestelling.get('Besteltijd', '').strip()
-        
         besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
         if besteltijd_naive.year == 1970: 
              return False
-        
         besteltijd = brussels_tz.localize(besteltijd_naive)
-        
         rapporteer = True
         type_schip = bestelling.get('Type')
-        
         try:
             if type_schip == 'I':
                 if not (nu_brussels - timedelta(hours=8) <= besteltijd <= nu_brussels + timedelta(hours=8)):
@@ -633,33 +615,25 @@ def vergelijk_bestellingen(oude, nieuwe):
                         'Schip': n_best.get('Schip'),
                         'status': 'GEWIJZIGD',
                         'wijzigingen': diff,
-                        'type': n_best.get('Type') # <-- HIER IS DE AANPASSING
+                        'type': n_best.get('Type')
                     })
             
     return wijzigingen
 
 def format_wijzigingen_email(wijzigingen):
-    """Formatteert de lijst met wijzigingen naar een plain text body."""
     body = []
     wijzigingen.sort(key=lambda x: x.get('status', ''))
-    
     for w in wijzigingen:
         s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
         status = w.get('status')
-        
         if status == 'NIEUW':
             details = w.get('details', {})
             tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
             tekst += f" - Type: {details.get('Type', 'N/A')}\n"
             tekst += f" - Besteltijd: {details.get('Besteltijd', 'N/A')}\n"
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
-        
         elif status == 'GEWIJZIGD':
-            # --- START AANPASSING ---
-            # Voeg het Type toe aan de header
             tekst = f"'{s_naam}' (Type: {w.get('type', '?')})\n"
-            # --- EINDE AANPASSING ---
-            
             relevante_diffs = []
             for k, v in w['wijzigingen'].items():
                 if k == 'Loods':
@@ -671,16 +645,12 @@ def format_wijzigingen_email(wijzigingen):
                         relevante_diffs.append(f" - Loods: '{v['oud']}' -> '{v['nieuw']}'")
                 elif k == 'Besteltijd':
                     relevante_diffs.append(f" - Besteltijd: '{v['oud']}' -> '{v['nieuw']}'")
-            
             tekst += "\n".join(relevante_diffs)
-        
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
             tekst = f"--- VERWIJDERD: '{s_naam}'\n"
             tekst += f" - (Was type {details.get('Type', 'N/A')}, Besteltijd {details.get('Besteltijd', 'N/A')})"
-
         body.append(tekst)
-    
     return "\n\n".join(filter(None, body))
 
 def main():
@@ -689,9 +659,7 @@ def main():
         logging.critical("FATAL ERROR: LIS_USER en LIS_PASS zijn niet ingesteld!")
         return
     
-    # Gebruik de nieuwe DB-laadfunctie (die 'last_report_key' negeert)
     vorige_staat = load_state_for_comparison()
-    
     oude_bestellingen = vorige_staat.get("bestellingen", [])
     
     session = requests.Session()
@@ -721,14 +689,8 @@ def main():
         wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
         if wijzigingen:
             inhoud = format_wijzigingen_email(wijzigingen)
-            
-            # --- START AANPASSING ---
-            # Verwijder "LIS Update: "
             onderwerp = f"{len(wijzigingen)} wijziging(en)"
-            # --- EINDE AANPASSING ---
-            
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
-            
             new_change_entry = DetectedChange(
                 timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None),
                 onderwerp=onderwerp,
@@ -741,13 +703,12 @@ def main():
     else:
         logging.info("First run, establishing baseline.")
         
-    # --- Save State for Next Run ---
     state_for_comparison = {
-        "bestellingen": nieuwe_bestellingen
+        "bestellingen": nieuwe_bestellingen,
+        "last_report_key": vorige_staat.get("last_report_key", "") # Blijf de oude key doorgeven
     }
     save_state_for_comparison(state_for_comparison)
     
-    # --- FINALE COMMIT ---
     try:
         db.session.commit()
         logging.info("--- Run Completed, state saved to DB. ---")
