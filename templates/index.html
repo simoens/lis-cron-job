@@ -93,7 +93,6 @@
             padding-left: 15px;
             margin-top: 25px;
             margin-bottom: 10px;
-            /* Stijlen van H1 overgenomen */
             font-weight: 400;
             text-transform: uppercase;
             letter-spacing: 1.5px;
@@ -107,7 +106,6 @@
             color: #343a40; /* Donkere tekst voor contrast */
             padding: 8px 10px; /* Padding voor 'pill' effect */
             border-radius: 5px; /* Afgeronde hoeken */
-            /* Stijlen van H1 overgenomen */
             font-weight: 400;
             text-transform: uppercase;
             letter-spacing: 1.5px;
@@ -144,21 +142,31 @@
             text-decoration: underline;
         }
         
-        /* Kleuren voor status */
+        /* === START AANPASSING: NIEUWE KLEUREN CSS === */
+        /* Groene achtergrond voor toegewezen loods */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) {
             background-color: #dff0d8; /* Zachtgroen */
             font-weight: 500; 
         }
+        /* Oranje voor <90m (was <1u) */
         tr.status-due-soon, tr.status-due-soon:nth-child(even) {
             background-color: #fff3e0; /* Zachtoranje */
             font-weight: 500;
-            animation: pulse-orange 4s ease-in-out infinite; 
+            /* GEEN animatie meer */
         }
-        tr.status-past-due, tr.status-past-due:nth-child(even) {
+        /* Rood KNIPPEREND voor <60m */
+        tr.status-warning-soon, tr.status-warning-soon:nth-child(even) {
             background-color: #ffebee; /* Zachtrood */
             font-weight: 500;
+            animation: pulse-red 2s ease-in-out infinite; /* Langzamere "adem" animatie */
         }
-        
+        /* Rood VAST voor verleden */
+        tr.status-past-due, tr.status-past-due:nth-child(even) {
+            background-color: #ffcdd2; /* Iets donkerder rood */
+            font-weight: 500;
+        }
+        /* === EINDE AANPASSING === */
+
         /* Wijzigingen */
         .change-item {
             background-color: #fdfdfd;
@@ -232,16 +240,16 @@
             color: #000;
         }
 
-        /* Animatie voor oranje rijen */
-        @keyframes pulse-orange {
+        /* === AANPASSING: Animatie is nu rood === */
+        @keyframes pulse-red {
           0% {
-            background-color: #fff3e0; 
+            background-color: #ffebee; /* Begin (zachtrood) */
           }
           50% {
-            background-color: #ffe0b2; 
+            background-color: #ffcdd2; /* Midden (iets donkerder) */
           }
           100% {
-            background-color: #fff3e0; 
+            background-color: #ffebee; /* Terug naar begin */
           }
         }
     </style>
@@ -292,9 +300,10 @@
                             <tbody>
                                 {% for schip in snapshot.content_data.INKOMEND %}
                                 <tr class="
-                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% elif schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'warning_soon' %}status-warning-soon
                                     {% elif schip.status_flag == 'due_soon' %}status-due-soon
-                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
                                     <td>{{ schip.Schip }}</td>
@@ -319,21 +328,22 @@
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
                                     <th style="width: 30%;">ETA/ETD</th>
-                                    </tr>
+                                </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.UITGAAND %}
                                 <tr class="
-                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% elif schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'warning_soon' %}status-warning-soon
                                     {% elif schip.status_flag == 'due_soon' %}status-due-soon
-                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
                                     <td>{{ schip.get('ETA/ETD', 'N/A') }}</td>
-                                    </tr>
+                                </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
@@ -350,21 +360,22 @@
                                     <th style="width: 30%;">SCHIP</th>
                                     <th style="width: 20%;">BESTELTIJD</th>
                                     <th style="width: 20%;">LOODS</th>
-                                    <th style="width: 30%;">BESTEMMING</th>
+                                    <th style="width: 30%;">ETA/ETD</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for schip in snapshot.content_data.VERPLAATSING %}
                                 <tr class="
-                                    {% if schip.status_flag == 'past_due' %}status-past-due
+                                    {% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
+                                    {% elif schip.status_flag == 'past_due' %}status-past-due
+                                    {% elif schip.status_flag == 'warning_soon' %}status-warning-soon
                                     {% elif schip.status_flag == 'due_soon' %}status-due-soon
-                                    {% elif schip.Loods == 'Loods werd toegewezen' %}pilot-assigned
                                     {% endif %}
                                 ">
                                     <td>{{ schip.Schip }}</td>
                                     <td>{{ schip.Besteltijd }}</td>
                                     <td>{{ schip.Loods }}</td>
-                                    <td>{{ schip.get('Exit Point', 'N/A') }}</td>
+                                    <td>{{ schip.get('ETA/ETD', 'N/A') }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
