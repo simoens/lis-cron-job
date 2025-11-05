@@ -208,7 +208,6 @@ def statistieken():
     seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
     # --- Haal alle benodigde data op ---
-    # We halen GEWIJZIGDE items op, gesorteerd op tijd
     changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
     ).order_by(DetectedChange.timestamp.asc()).all() 
@@ -230,7 +229,7 @@ def statistieken():
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
         total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) 
         
-    # --- Stat 3: Top 5 Gewijzigde Schepen (BUGFIX) ---
+    # --- Stat 3: Top 5 Gewijzigde Schepen ---
     ship_counter = Counter()
     ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     
@@ -240,61 +239,66 @@ def statistieken():
             for name in ship_names:
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
-    # --- EINDE BUGFIX ---
 
-    # --- Stat 4: Analyseer Besteltijd Wijzigingen (Uitgaand) (BUGFIX) ---
-    besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
-    ship_name_regex = re.compile(r"^\'([^']+)\'", re.MULTILINE) # Simpele regex voor de naam
+    # --- START BUGFIX STAT 4: Herschreven logica ---
     
-    ship_times = {} 
+    # Regex om de *eerste* besteltijd te vinden (van 'NIEUW')
+    nieuw_besteltijd_regex = re.compile(r"- Besteltijd: ([^\n]+)")
+    # Regex om 'GEWIJZIGD' besteltijd te vinden
+    gewijzigd_besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
+    # Regex om de scheepsnaam te vinden
+    ship_name_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: )?'([^']+)'", re.MULTILINE)
+
     ship_first_time = {}
     ship_final_time = {}
 
-    # Query nu op de NIEUWE 'type' kolom!
-    uitgaande_wijzigingen = DetectedChange.query.filter(
+    # Query op Type 'U' (Uitgaand). We negeren 'V' zoals gevraagd.
+    alle_uitgaande_logs = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc,
-        DetectedChange.type == 'U' # <-- De 100% betrouwbare filter
+        DetectedChange.type == 'U'
     ).order_by(DetectedChange.timestamp.asc()).all()
 
-    for change in uitgaande_wijzigingen:
-        ship_name_match = ship_name_regex.search(change.content)
+    for log in alle_uitgaande_logs:
+        ship_name_match = ship_name_regex.search(log.content)
         if not ship_name_match:
             continue
         ship_name = ship_name_match.group(1).strip()
-        
-        besteltijd_match = besteltijd_regex.search(change.content)
-        if not besteltijd_match:
-            continue
-            
-        oud_tijd_str = besteltijd_match.group(1)
-        nieuw_tijd_str = besteltijd_match.group(2)
-        
-        try:
-            oud_tijd = parse_besteltijd(oud_tijd_str)
-            nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
-            
-            if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
-                continue 
 
-            if ship_name not in ship_times:
-                ship_times[ship_name] = []
-                ship_first_time[ship_name] = oud_tijd
-            
-            ship_times[ship_name].append(oud_tijd)
-            ship_times[ship_name].append(nieuw_tijd)
-            ship_final_time[ship_name] = nieuw_tijd 
-            
-        except Exception:
-            continue 
-    # --- EINDE BUGFIX ---
+        if "+++ NIEUW SCHIP:" in log.content:
+            besteltijd_match = nieuw_besteltijd_regex.search(log.content)
+            if besteltijd_match:
+                tijd_str = besteltijd_match.group(1).strip()
+                tijd_obj = parse_besteltijd(tijd_str)
+                if tijd_obj.year != 1970:
+                    if ship_name not in ship_first_time: # Alleen de allereerste keer opslaan
+                        ship_first_time[ship_name] = tijd_obj
+                    ship_final_time[ship_name] = tijd_obj # Dit is de 'laatste' tijd tot nu toe
 
+        elif "'" in log.content: # Dit is een 'GEWIJZIGD'
+            besteltijd_match = gewijzigd_besteltijd_regex.search(log.content)
+            if besteltijd_match:
+                oud_tijd_str = besteltijd_match.group(1)
+                nieuw_tijd_str = besteltijd_match.group(2)
+                
+                oud_tijd = parse_besteltijd(oud_tijd_str)
+                nieuw_tijd = parse_besteltijd(nieuw_tijd_str)
+                
+                if oud_tijd.year == 1970 or nieuw_tijd.year == 1970:
+                    continue
+
+                if ship_name not in ship_first_time:
+                    ship_first_time[ship_name] = oud_tijd # Als dit het eerste is dat we zien
+                
+                ship_final_time[ship_name] = nieuw_tijd # Altijd de 'laatste' tijd updaten
+
+    # Nu de lijsten bouwen
     vervroegd_lijst = []
     vertraagd_lijst = []
     op_tijd_lijst = [] 
 
-    for ship_name in ship_times:
-        eerste_tijd = ship_first_time[ship_name]
-        laatste_tijd = ship_final_time[ship_name]
+    for ship_name, eerste_tijd in ship_first_time.items():
+        # Pak de laatste tijd, of de eerste tijd als het schip nooit gewijzigd is
+        laatste_tijd = ship_final_time.get(ship_name, eerste_tijd) 
         
         delta_seconds = (laatste_tijd - eerste_tijd).total_seconds()
         
@@ -315,7 +319,9 @@ def statistieken():
         elif delta_seconds < 0: 
             vervroegd_lijst.append(result_data)
         else:
+            # Delta is 0, dit is de 'OP TIJD' categorie
             op_tijd_lijst.append(result_data)
+    # --- EINDE BUGFIX ---
 
     vervroegd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
     vertraagd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
