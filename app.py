@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v27, Smart 'Alle' Reader) ---")
+    logging.info("--- Running haal_bestellingen_op (v28, Strict Manual Override) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,44 +353,14 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # --- INTELLIGENTE SELECT RESET (AANGEPAST) ---
+            # Selects verzamelen (simpel)
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                if skip_all_dropdown_logic:
-                    # Stap 1: Behoud state
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
-                else:
-                    # Stap 2: Zoek naar 'Alle'
-                    options = select_tag.find_all('option')
-                    val_to_use = None
-                    
-                    # 1. Zoek op tekst 'Alle'
-                    for o in options:
-                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
-                            val_to_use = o.get('value', '')
-                            break
-                    
-                    # 2. Zoek op value 'no_value'
-                    if val_to_use is None:
-                        for o in options:
-                            if o.get('value') == 'no_value':
-                                val_to_use = 'no_value'
-                                break
-                                
-                    # 3. Fallback: als het filter_bld is en we vonden niks, doe NIKS (laat leeg)
-                    #    Dit voorkomt dat we de eerste optie (Heli) pakken
-                    if val_to_use is None:
-                        if 'filter_bld' in name:
-                             val_to_use = '' # Laat leeg, vaak pakt de server dan default 'Alle'
-                        else:
-                             # Voor andere velden: pak de eerste
-                             if options: val_to_use = options[0].get('value', '')
-                    
-                    data[name] = val_to_use
-                
+                # Pak de huidige 'selected' option als basis
+                option = select_tag.find('option', selected=True) or select_tag.find('option')
+                if option: data[name] = option.get('value', '')
             return data
 
         # =================================================================
@@ -399,6 +369,7 @@ def haal_bestellingen_op(session):
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
+        # Trigger = Vinkje
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
@@ -413,18 +384,25 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        time.sleep(2)
+        # VERLENGDE PAUZE (5 sec) - Zoals aangegeven door gebruiker
+        time.sleep(5)
         
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
-        logging.info("STAP 2: Filters instellen en ZOEKEN...")
+        logging.info("STAP 2: Filters HARD instellen en ZOEKEN...")
         
-        # Nu gebruiken we de SLIMME logica die 'Alle' zoekt
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer Richting op Alle (want die is radio button, geen select)
+        # Forceer filters HARD
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        
+        # HARDCODE BELOODSING (TYPE) OP LEEG
+        # Lege string is de waarde voor 'Alle' in de meeste ASP.NET dropdowns
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = ''
         
         # Datums NOGMAALS leegmaken
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
@@ -436,8 +414,8 @@ def haal_bestellingen_op(session):
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
-        # Log wat we sturen voor filter_bld
-        logging.info(f"Stap 2 Type/Bld waarde: '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
+        # Debug Log
+        logging.info(f"Versturen Type (filter_bld): '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -449,7 +427,7 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 50 
+        max_pages = 60 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -474,14 +452,9 @@ def haal_bestellingen_op(session):
             
             # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            # We moeten hier ook de slimme waarden herhalen, anders reset hij misschien
-            # Voor nu gokken we dat viewstate dit afhandelt, maar voor zekerheid:
-            # (We kunnen de waarden uit form_data_step2 hergebruiken)
-            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam', 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']:
-                if k in form_data_step2:
-                    page_form_data[k] = form_data_step2[k]
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = ''
             
-            # Datums leeg
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
@@ -493,7 +466,7 @@ def haal_bestellingen_op(session):
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
-            time.sleep(0.3) 
+            time.sleep(0.5) 
 
         logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
