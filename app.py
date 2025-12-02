@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v25, Soft Touch) ---")
+    logging.info("--- Running haal_bestellingen_op (v26, Force Type Alle) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -358,31 +358,33 @@ def haal_bestellingen_op(session):
                 name = select_tag.get('name')
                 if not name: continue
                 
+                # DEBUG: Log alle opties voor filter_bld om zeker te zijn
+                if 'filter_bld' in name:
+                    opts = [f"{o.text}={o.get('value')}" for o in select_tag.find_all('option')]
+                    logging.info(f"DEBUG: Opties voor {name}: {opts}")
+
                 if skip_all_dropdown_logic:
-                    # In Stap 1 (ontgrendeling): Behoud de huidige waarde
+                    # In Stap 1: Behoud de huidige waarde
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
                 else:
-                    # In Stap 2 (Zoeken): Generieke logica (wordt overschreven)
+                    # In Stap 2: Generiek (overschreven)
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
             return data
 
         # =================================================================
-        # STAP 1: ONTGRENDELING + DATUMS LEEGMAKEN
+        # STAP 1: ONTGRENDELING
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
-        # Trigger = Vinkje
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
-        # BELANGRIJK: Datums expliciet LEEG maken (zoals gebruiker aangaf)
+        # Datums LEEG
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        
-        # Richting = Alle
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
@@ -391,11 +393,11 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # VERLENGDE PAUZE (2 sec)
-        time.sleep(2)
+        # VERLENGDE PAUZE (4 sec)
+        time.sleep(4)
         
         # =================================================================
-        # STAP 2: DE ECHTE ZOEKOPDRACHT (Filters + Knop)
+        # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
         logging.info("STAP 2: Filters instellen en ZOEKEN...")
         
@@ -407,11 +409,12 @@ def haal_bestellingen_op(session):
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
+        # FORCEER TYPE OOK OP 'no_value' (Dit was de vermoedelijke fout)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
+        
         # Datums NOGMAALS leegmaken
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        
-        # Filter_bld laten we MET RUST (verwijderd uit deze versie)
         
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
@@ -429,7 +432,7 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 50 # Verhoogd voor 725 resultaten
+        max_pages = 50 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -455,7 +458,7 @@ def haal_bestellingen_op(session):
             # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-            # Datums leeg houden
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
