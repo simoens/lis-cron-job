@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v24, Empty Date & Two-Step) ---")
+    logging.info("--- Running haal_bestellingen_op (v25, Soft Touch) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -391,8 +391,8 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # Even pauze voor de server (simuleer gebruiker)
-        time.sleep(1)
+        # VERLENGDE PAUZE (2 sec)
+        time.sleep(2)
         
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT (Filters + Knop)
@@ -406,9 +406,12 @@ def haal_bestellingen_op(session):
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        
         # Datums NOGMAALS leegmaken
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        
+        # Filter_bld laten we MET RUST (verwijderd uit deze versie)
         
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
