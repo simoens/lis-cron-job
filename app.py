@@ -36,7 +36,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Dit moet NA 'app = Flask(__name__)' staan
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
 # Gebruik environment variable of fallback wachtwoord
-app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'lislis' 
+app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
 app.config['BASIC_AUTH_FORCE'] = False # <--- AANGEPAST: Zet dit op False zodat cronjobs erdoor kunnen
 
 # Activeer de extensions
@@ -384,16 +384,48 @@ def login(session):
         return False
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v8, Zeebrugge-Fix) ---")
+    logging.info("--- Running haal_bestellingen_op (v9, Alle Reizen & MPET-Filter) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        response = session.get(base_page_url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'lxml')
+        
+        # STAP 1: Eerst de pagina ophalen om de 'ViewState' te krijgen
+        # Dit is nodig om een geldig formulier terug te kunnen sturen
+        get_response = session.get(base_page_url)
+        get_response.raise_for_status()
+        soup_get = BeautifulSoup(get_response.content, 'lxml')
+        
+        viewstate = soup_get.find('input', {'name': '__VIEWSTATE'})
+        viewstate_gen = soup_get.find('input', {'name': '__VIEWSTATEGENERATOR'})
+        event_validation = soup_get.find('input', {'name': '__EVENTVALIDATION'})
+        
+        if not viewstate:
+            logging.error("Kon __VIEWSTATE niet vinden voor de zoekopdracht.")
+            return []
+
+        # STAP 2: We bouwen een formulier na.
+        # Het geheim is: Als je een checkbox UIT wilt zetten, stuur je hem gewoon NIET mee.
+        # We sturen dus wel de knop 'ZOEKEN', maar niet 'chkEigenReizen'.
+        form_data = {
+            '__VIEWSTATE': viewstate['value'],
+            '__VIEWSTATEGENERATOR': viewstate_gen['value'] if viewstate_gen else '',
+            '__EVENTVALIDATION': event_validation['value'] if event_validation else '',
+            'ctl00$ContentPlaceHolder1$btnZoeken': 'ZOEKEN' # Dit simuleert de klik op de knop
+            # BELANGRIJK: De regel hieronder laten we weg, dat staat gelijk aan uitvinken:
+            # 'ctl00$ContentPlaceHolder1$chkEigenReizen': 'on' 
+        }
+
+        # We sturen de POST request (het 'klikken' op de knop)
+        post_response = session.post(base_page_url, data=form_data)
+        post_response.raise_for_status()
+        
+        # We gebruiken nu de resultaten van de POST (waarin alle reizen zitten)
+        soup = BeautifulSoup(post_response.content, 'lxml')
+        
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         if table is None: 
-            logging.warning("De bestellingentabel werd niet gevonden.")
+            logging.warning("De bestellingentabel werd niet gevonden na de zoekopdracht.")
             return []
+            
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
         bestellingen = []
         for row in table.find_all('tr')[1:]: 
@@ -414,7 +446,7 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             bestellingen.append(bestelling)
-        logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden.")
+        logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden (Alle reizen).")
         return bestellingen
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
