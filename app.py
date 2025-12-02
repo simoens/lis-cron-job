@@ -471,7 +471,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         try:
             entry_point = b.get('Entry Point', '').lower()
             exit_point = b.get('Exit Point', '').lower()
-            if 'zeebrugge' in entry_point or 'zeebrugge' in exit_point:
+            if 'zeebrugge' in entry_point:
                 continue 
             
             besteltijd_str_raw = b.get("Besteltijd")
