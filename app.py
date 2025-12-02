@@ -384,7 +384,7 @@ def login(session):
         return False
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v10, Alle Reizen Robuust) ---")
+    logging.info("--- Running haal_bestellingen_op (v11, Strict Browser Simulation) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -393,38 +393,57 @@ def haal_bestellingen_op(session):
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        # STAP 2: VERZAMEL ALLE INPUTS (Veel veiliger dan handmatig ViewState pakken)
+        # STAP 2: VERZAMEL INPUTS (Selectief!)
         form_data = {}
         
-        # Alle <input> velden (hidden, text, etc.)
+        # Inputs verwerken
         for input_tag in soup_get.find_all('input'):
             name = input_tag.get('name')
             value = input_tag.get('value', '')
-            if name:
-                form_data[name] = value
+            input_type = input_tag.get('type', 'text').lower()
+
+            if not name:
+                continue
+
+            # 2a. Skip submit/image/reset buttons. We sturen alleen de zoekknop later handmatig mee.
+            # Als we alle buttons meesturen, raakt ASP.NET in de war.
+            if input_type in ['submit', 'image', 'button', 'reset']:
+                continue
+            
+            # 2b. Checkbox/Radio: alleen meenemen als 'checked'
+            # Een browser stuurt niet-aangevinkte boxes NIET mee.
+            if input_type in ['checkbox', 'radio']:
+                if not input_tag.has_attr('checked'):
+                    continue
+            
+            # 2c. Specifiek filter: Eigen Reizen mag NOOIT mee
+            if 'chkEigenReizen' in name:
+                continue
+
+            form_data[name] = value
         
-        # Alle <select> velden (dropdowns), inclusief de geselecteerde optie
+        # Selects (Dropdowns) verwerken
         for select_tag in soup_get.find_all('select'):
             name = select_tag.get('name')
             if name:
                 option = select_tag.find('option', selected=True)
-                if not option: # Als er niks expliciet 'selected' is, pak de eerste
+                if not option: 
                     option = select_tag.find('option')
                 if option:
                     form_data[name] = option.get('value', '')
 
-        # STAP 3: WIJZIGINGEN AANBRENGEN
+        # STAP 3: FORCEREN VAN DE JUISTE KNOPPEN & FILTERS
         
-        # Zorg dat de zoekknop wordt 'ingedrukt'
-        if 'ctl00$ContentPlaceHolder1$btnZoeken' not in form_data:
-             form_data['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
-
-        # VERWIJDER HET VINKJE VOOR EIGEN REIZEN
-        # Door de key helemaal uit form_data te halen, vinkt de server hem uit.
-        keys_to_remove = [k for k in form_data.keys() if 'chkEigenReizen' in k]
-        for k in keys_to_remove:
-            del form_data[k]
-            logging.info(f"Vinkje 'Eigen reizen' verwijderd uit request: {k}")
+        # Druk op de ZOEKEN knop
+        form_data['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
+        
+        # Forceer In/Uit/Alle op 'Alle' (zodat we alles krijgen)
+        # De value is meestal 'Alle', we overschrijven wat er ook geselecteerd was
+        if 'ctl00$ContentPlaceHolder1$rblInOut' in form_data:
+             form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
+        else:
+             # Als hij niet in form_data zat (omdat 'Alle' misschien niet default checked was), voegen we hem toe
+             form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
 
         # STAP 4: POST REQUEST
         post_response = session.post(base_page_url, data=form_data)
@@ -435,8 +454,9 @@ def haal_bestellingen_op(session):
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         if table is None: 
             logging.warning("De bestellingentabel werd niet gevonden na de zoekopdracht.")
-            # Log de HTML lengte voor debugging
-            logging.warning(f"Response lengte: {len(post_response.text)}")
+            # Als debug: checken of we terug op de login pagina zijn beland
+            if "Inloggen" in post_response.text:
+                 logging.warning("Lijkt erop dat we zijn uitgelogd of de sessie is verlopen.")
             return []
             
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
