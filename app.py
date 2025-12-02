@@ -13,7 +13,8 @@ import time
 from flask_sqlalchemy import SQLAlchemy 
 import psycopg2 
 from flask_basicauth import BasicAuth
-# --- CONFIGURATIE ---
+
+# --- CONFIGURATIE LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
@@ -24,9 +25,22 @@ app_state = {
 data_lock = threading.Lock() 
 
 # --- FLASK APPLICATIE & DATABASE OPZET ---
+# BELANGRIJK: Deze regel moet eerst komen!
 app = Flask(__name__)
+
+# --- CONFIGURATIE ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# --- BEVEILIGING CONFIGURATIE (Basic Auth) ---
+# Dit moet NA 'app = Flask(__name__)' staan
+app.config['BASIC_AUTH_USERNAME'] = 'mpet'
+# Gebruik environment variable of fallback wachtwoord
+app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
+app.config['BASIC_AUTH_FORCE'] = False # <--- AANGEPAST: Zet dit op False zodat cronjobs erdoor kunnen
+
+# Activeer de extensions
+basic_auth = BasicAuth(app)
 db = SQLAlchemy(app)
 
 # --- DATABASE MODELLEN ---
@@ -40,7 +54,6 @@ class DetectedChange(db.Model):
     timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     onderwerp = db.Column(db.String(200))
     content = db.Column(db.Text)
-    # --- NIEUWE KOLOM (vorige keer toegevoegd) ---
     type = db.Column(db.String(10)) 
 
 class KeyValueStore(db.Model):
@@ -55,7 +68,6 @@ def load_state_for_comparison():
     """Laadt alleen de data die nodig is voor de *volgende* run."""
     logging.info("Oude staat (voor vergelijking) wordt geladen uit PostgreSQL...")
     try:
-        # --- FIX: Zorg dat we de juiste sleutel 'bestellingen' gebruiken ---
         bestellingen_obj = KeyValueStore.query.get('bestellingen')
         vorige_staat = {
             "bestellingen": bestellingen_obj.value if bestellingen_obj else []
@@ -96,6 +108,7 @@ def main_task():
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
 @app.route('/')
+@basic_auth.required # <--- BEVEILIGD
 def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
     latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
@@ -124,6 +137,7 @@ def home():
                                 secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/trigger-run')
+# GEEN @basic_auth.required hier! De cronjob moet hier altijd bij kunnen.
 def trigger_run():
     """Een geheime URL endpoint die door een externe cron job wordt aangeroepen."""
     secret = request.args.get('secret') 
@@ -136,6 +150,7 @@ def trigger_run():
     return "OK: Scraper run triggered in background.", 200
 
 @app.route('/force-snapshot', methods=['POST'])
+@basic_auth.required # <--- BEVEILIGD (alleen ingelogde gebruikers mogen klikken)
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
     secret = request.form.get('secret') 
@@ -148,6 +163,7 @@ def force_snapshot_route():
     return redirect(url_for('home'))
 
 @app.route('/status')
+# GEEN @basic_auth.required hier! JS polling kan anders vastlopen.
 def status_check():
     """Een lichtgewicht endpoint die de client-side JS kan pollen."""
     latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
@@ -160,13 +176,13 @@ def status_check():
             return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 @app.route('/logboek')
+@basic_auth.required # <--- BEVEILIGD
 def logboek():
     """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
     search_term = request.args.get('q', '')
     
     all_changes_query = DetectedChange.query.all()
     
-    # --- START BUGFIX: SLIMMERE REGEX ---
     ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     unique_ships = set()
     
@@ -177,7 +193,6 @@ def logboek():
                 unique_ships.add(name.strip()) 
                 
     all_ships_sorted = sorted(list(unique_ships))
-    # --- EINDE BUGFIX ---
     
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
     if search_term:
@@ -200,6 +215,7 @@ def logboek():
                             secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
+@basic_auth.required # <--- BEVEILIGD
 def statistieken():
     """Toont een overzichtspagina met statistieken van de afgelopen 7 dagen."""
     
@@ -207,7 +223,6 @@ def statistieken():
     nu_brussels = datetime.now(brussels_tz)
     seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
     
-    # --- Haal alle benodigde data op ---
     changes = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc
     ).order_by(DetectedChange.timestamp.asc()).all() 
@@ -216,10 +231,8 @@ def statistieken():
         Snapshot.timestamp >= seven_days_ago_utc
     ).all()
 
-    # --- Stat 1: Totaal Wijzigingen ---
     total_changes = len(changes)
 
-    # --- Stat 2: Huidige Snapshot data ---
     total_incoming = 0
     total_outgoing = 0
     total_shifting = 0
@@ -229,7 +242,6 @@ def statistieken():
         total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
         total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) 
         
-    # --- Stat 3: Top 5 Gewijzigde Schepen ---
     ship_counter = Counter()
     ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
     
@@ -240,19 +252,13 @@ def statistieken():
                 ship_counter[name.strip()] += 1
     top_ships = ship_counter.most_common(5)
 
-    # --- START BUGFIX STAT 4: Herschreven logica ---
-    
-    # Regex om de *eerste* besteltijd te vinden (van 'NIEUW')
     nieuw_besteltijd_regex = re.compile(r"- Besteltijd: ([^\n]+)")
-    # Regex om 'GEWIJZIGD' besteltijd te vinden
     gewijzigd_besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
-    # Regex om de scheepsnaam te vinden
     ship_name_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: )?'([^']+)'", re.MULTILINE)
 
     ship_first_time = {}
     ship_final_time = {}
 
-    # Query op Type 'U' (Uitgaand). We negeren 'V' zoals gevraagd.
     alle_uitgaande_logs = DetectedChange.query.filter(
         DetectedChange.timestamp >= seven_days_ago_utc,
         DetectedChange.type == 'U'
@@ -270,11 +276,11 @@ def statistieken():
                 tijd_str = besteltijd_match.group(1).strip()
                 tijd_obj = parse_besteltijd(tijd_str)
                 if tijd_obj.year != 1970:
-                    if ship_name not in ship_first_time: # Alleen de allereerste keer opslaan
+                    if ship_name not in ship_first_time: 
                         ship_first_time[ship_name] = tijd_obj
-                    ship_final_time[ship_name] = tijd_obj # Dit is de 'laatste' tijd tot nu toe
+                    ship_final_time[ship_name] = tijd_obj 
 
-        elif "'" in log.content: # Dit is een 'GEWIJZIGD'
+        elif "'" in log.content: 
             besteltijd_match = gewijzigd_besteltijd_regex.search(log.content)
             if besteltijd_match:
                 oud_tijd_str = besteltijd_match.group(1)
@@ -287,17 +293,15 @@ def statistieken():
                     continue
 
                 if ship_name not in ship_first_time:
-                    ship_first_time[ship_name] = oud_tijd # Als dit het eerste is dat we zien
+                    ship_first_time[ship_name] = oud_tijd 
                 
-                ship_final_time[ship_name] = nieuw_tijd # Altijd de 'laatste' tijd updaten
+                ship_final_time[ship_name] = nieuw_tijd 
 
-    # Nu de lijsten bouwen
     vervroegd_lijst = []
     vertraagd_lijst = []
     op_tijd_lijst = [] 
 
     for ship_name, eerste_tijd in ship_first_time.items():
-        # Pak de laatste tijd, of de eerste tijd als het schip nooit gewijzigd is
         laatste_tijd = ship_final_time.get(ship_name, eerste_tijd) 
         
         delta_seconds = (laatste_tijd - eerste_tijd).total_seconds()
@@ -319,9 +323,7 @@ def statistieken():
         elif delta_seconds < 0: 
             vervroegd_lijst.append(result_data)
         else:
-            # Delta is 0, dit is de 'OP TIJD' categorie
             op_tijd_lijst.append(result_data)
-    # --- EINDE BUGFIX ---
 
     vervroegd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
     vertraagd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
@@ -341,12 +343,6 @@ def statistieken():
                             stats=stats,
                             secret_key=os.environ.get('SECRET_KEY'))
 
-# --- CONFIGURATIE ---
-app.config['BASIC_AUTH_USERNAME'] = 'mpet'  # Kies een gebruikersnaam
-app.config['BASIC_AUTH_PASSWORD'] = 'lislis'   # Kies een sterk wachtwoord
-app.config['BASIC_AUTH_FORCE'] = True               # Beveilig ALLES direct
-
-basic_auth = BasicAuth(app)
 
 # --- ENVIRONMENT VARIABLES ---
 USER = os.environ.get('LIS_USER')
@@ -361,8 +357,6 @@ def parse_besteltijd(besteltijd_str):
         cleaned_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
         return datetime.strptime(cleaned_str, "%d/%m/%y %H:%M")
     except ValueError:
-        # We loggen dit niet meer, want 'Sluisplanning' is normaal
-        # logging.warning(f"Kon besteltijd '{besteltijd_str}' niet parsen (bv. 'Sluisplanning'). Wordt genegeerd in sortering.")
         return DEFAULT_TIME
 
 # --- SCRAPER FUNCTIES ---
@@ -459,7 +453,6 @@ def haal_pta_van_reisplan(session, reis_id):
         logging.error(f"Error fetching voyage plan for ReisId {reis_id}: {e}")
         return None
 
-# --- START AANPASSING: Nieuwe Kleurlogica ---
 def filter_snapshot_schepen(bestellingen, session, nu): 
     """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
     
@@ -501,7 +494,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
             schip_type = b.get("Type")
 
-            # Haal ETA/ETD op, dit hebben we nu voor meerdere checks nodig
             eta_etd_aware = None
             eta_etd_str = b.get("ETA/ETD")
             eta_etd_naive = parse_besteltijd(eta_etd_str)
@@ -514,7 +506,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if schip_type == "I": 
                     if not is_sluisplanning:
                         tijd_om_te_checken = besteltijd_aware
-                else: # Uitgaand (U) en Shifting (V)
+                else: 
                     if eta_etd_aware:
                         tijd_om_te_checken = eta_etd_aware
                     elif not is_sluisplanning:
@@ -532,7 +524,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             
             b['status_flag'] = status_flag
             
-            # --- START FILTERLOGICA ---
             show_ship = False
             
             if schip_type == "U":
@@ -540,11 +531,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     show_ship = True
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_uit_toekomst):
                     show_ship = True
-                # --- START AANPASSING ---
-                # 3. Toon ook als de ETA/ETD (indien aanwezig) in de toekomst ligt
                 elif eta_etd_aware and (eta_etd_aware > nu):
                     show_ship = True
-                # --- EINDE AANPASSING ---
 
                 if show_ship:
                     gefilterd["UITGAAND"].append(b)
@@ -576,7 +564,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
                 if show_ship:
                     gefilterd["VERPLAATSING"].append(b)
-            # --- EINDE FILTERLOGICA ---
                     
         except (ValueError, TypeError) as e:
             logging.warning(f"Fout bij verwerken van '{besteltijd_str_raw}' (Fout: {e}). Schip wordt overgeslagen.", exc_info=False)
@@ -587,7 +574,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd["VERPLAATSING"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     
     return gefilterd
-# --- EINDE AANPASSING ---
 
 def filter_dubbele_schepen(bestellingen):
     unieke_schepen = {}
@@ -682,14 +668,12 @@ def format_wijzigingen_email(wijzigingen):
     body = []
     wijzigingen.sort(key=lambda x: x.get('status', ''))
     
-    # --- START AANPASSING: Helper dictionary voor vertaling ---
     type_vertaling = {
         'I': 'Inkomend',
         'U': 'Uitgaand',
         'V': 'Shifting',
         '?': '?'
     }
-    # --- EINDE AANPASSING ---
     
     for w in wijzigingen:
         s_naam = re.sub(r'\s*\(d\)\s*$', '', w.get('Schip', '')).strip()
@@ -697,7 +681,6 @@ def format_wijzigingen_email(wijzigingen):
         
         if status == 'NIEUW':
             details = w.get('details', {})
-            # Gebruik de vertaling
             type_text = type_vertaling.get(details.get('Type', '?'), '?')
             
             tekst = f"+++ NIEUW SCHIP: '{s_naam}'\n"
@@ -706,7 +689,6 @@ def format_wijzigingen_email(wijzigingen):
             tekst += f" - Loods: {details.get('Loods', 'N/A')}"
         
         elif status == 'GEWIJZIGD':
-            # Gebruik de vertaling
             type_text = type_vertaling.get(w.get('type', '?'), '?')
             tekst = f"'{s_naam}' (Type: {type_text})\n"
             
@@ -726,7 +708,6 @@ def format_wijzigingen_email(wijzigingen):
         
         elif status == 'VERWIJDERD':
             details = w.get('details', {})
-            # Gebruik de vertaling
             type_text = type_vertaling.get(details.get('Type', '?'), '?')
             
             tekst = f"--- VERWIJDERD: '{s_naam}'\n"
@@ -775,18 +756,16 @@ def main():
             onderwerp = f"{len(wijzigingen)} wijziging(en)"
             logging.info(f"Found {len(wijzigingen)} changes, logging them to web history.")
             
-            # --- START AANPASSING: Sla 'type' op in DB ---
-            for w in wijzigingen: # Loop door de wijzigingen om ze individueel op te slaan
+            for w in wijzigingen: 
                 new_change_entry = DetectedChange(
                     timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None),
                     onderwerp=onderwerp,
-                    content=format_wijzigingen_email([w]), # Formatteer elke wijziging apart
-                    type=w.get('details', {}).get('Type') if w.get('status') == 'NIEUW' else w.get('type') # Sla 'type' op
+                    content=format_wijzigingen_email([w]), 
+                    type=w.get('details', {}).get('Type') if w.get('status') == 'NIEUW' else w.get('type') 
                 )
                 db.session.add(new_change_entry)
             
             logging.info(f"{len(wijzigingen)} nieuwe wijziging rijen toegevoegd aan 'detected_change' tabel.")
-            # --- EINDE AANPASSING ---
         else:
             logging.info("No relevant changes found.")
     else:
@@ -805,5 +784,5 @@ def main():
         logging.error(f"FATAL ERROR during final DB commit: {e}")
         db.session.rollback()
 
-# if __name__ == '__main__':
-#     app.run(debug=True, port=5001)
+if __name__ == '__main__':
+    app.run(debug=True, port=5001)
