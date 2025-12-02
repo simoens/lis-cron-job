@@ -250,7 +250,11 @@ def statistieken():
     stats = {"total_changes": total_changes, "total_incoming": total_incoming, "total_outgoing": total_outgoing, "total_shifting": total_shifting, "top_ships": top_ships, "vervroegd": vervroegd_lijst, "vertraagd": vertraagd_lijst, "op_tijd": op_tijd_lijst}
     return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
 
-# --- HELPER FUNCTIES ---
+# --- HELPER FUNCTIES & OMGEVINGSVARIABELEN ---
+# *** HIER ZIJN ZE TERUG ***
+USER = os.environ.get('LIS_USER')
+PASS = os.environ.get('LIS_PASS')
+
 def parse_besteltijd(besteltijd_str):
     DEFAULT_TIME = datetime(1970, 1, 1) 
     if not besteltijd_str: return DEFAULT_TIME
