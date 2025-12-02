@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v16, Two-Step Event Trigger) ---")
+    logging.info("--- Running haal_bestellingen_op (v17, Debug Dump & Two-Step) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -339,6 +339,13 @@ def haal_bestellingen_op(session):
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
+        # --- DEBUG: DUMP ALLE INPUTS ---
+        # Dit helpt ons te zien wat er nu ECHT op de pagina staat
+        logging.info("--- START INPUT DUMP ---")
+        for inp in soup_get.find_all('input'):
+            logging.info(f"Input: name='{inp.get('name')}', type='{inp.get('type')}', value='{inp.get('value')}'")
+        logging.info("--- END INPUT DUMP ---")
+
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
         def verzamel_basis_form(soup):
             data = {}
@@ -346,7 +353,7 @@ def haal_bestellingen_op(session):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
-                # Skip checkbox (betrokken) ALTIJD
+                # Skip checkbox ALTIJD in de basis
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
                 # Skip buttons
@@ -360,55 +367,44 @@ def haal_bestellingen_op(session):
             return data
 
         # ==========================================
-        # STAP 1: DE "KLIK" OP HET VINKJE (Event Trigger)
+        # STAP 1: DE "KLIK" OP HET VINKJE
         # ==========================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
+        logging.info("STAP 1: Verstuur 'Uncheck Event' (Target: select$betrokken)...")
         form_data_step1 = verzamel_basis_form(soup_get)
         
-        # Stel de trigger in op de checkbox naam (precies zoals in de onclick)
+        # Triggeren
         target_name = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTTARGET'] = target_name
         form_data_step1['__EVENTARGUMENT'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle' # Zeker zijn dat dit 'Alle' is
         
-        # POST 1
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
-        # Check even of we nu al geluk hebben
-        test_results = parse_table_from_soup(soup_step1)
-        logging.info(f"Na Stap 1 (Uncheck) gevonden items: {len(test_results)}")
+        # ==========================================
+        # STAP 2: ZOEKOPDRACHT UITVOEREN
+        # ==========================================
+        logging.info("STAP 2: Druk op 'ZOEKEN' met nieuwe state...")
         
-        # Bepaal welke soup we gaan gebruiken voor Stap 2 of Pagination
-        current_soup = soup_step1
+        form_data_step2 = verzamel_basis_form(soup_step1) # Gebruik de NIEUWE state van Step 1
+        form_data_step2['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
         
-        # Als we weinig resultaten hebben, moeten we waarschijnlijk nog op ZOEKEN drukken met de nieuwe state
-        if len(test_results) < 50:
-            logging.info("Weinig resultaten na uncheck. STAP 2: Druk op 'ZOEKEN' met nieuwe state...")
-            
-            form_data_step2 = verzamel_basis_form(soup_step1) # Gebruik de NIEUWE viewstate
-            form_data_step2['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
-            form_data_step2['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
-            
-            # Verwijder event targets van stap 1
-            if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
-            if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
-            
-            response_step2 = session.post(base_page_url, data=form_data_step2)
-            response_step2.raise_for_status()
-            current_soup = BeautifulSoup(response_step2.content, 'lxml')
-            
-            test_results_2 = parse_table_from_soup(current_soup)
-            logging.info(f"Na Stap 2 (Zoeken) gevonden items: {len(test_results_2)}")
+        # Zorg dat we geen event targets meer sturen
+        if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
+        if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
+        
+        response_step2 = session.post(base_page_url, data=form_data_step2)
+        response_step2.raise_for_status()
+        current_soup = BeautifulSoup(response_step2.content, 'lxml')
         
         # ==========================================
-        # STAP 3: PAGINERING (Vanaf current_soup)
+        # STAP 3: PAGINERING
         # ==========================================
         alle_bestellingen = parse_table_from_soup(current_soup)
+        logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 20 # Verhoogd naar 20 voor 600+ items (ca 20-30 per pagina?)
+        max_pages = 20 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
