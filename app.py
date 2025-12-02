@@ -17,6 +17,10 @@ from flask_basicauth import BasicAuth
 # --- CONFIGURATIE LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# --- ENVIRONMENT VARIABLES (Inloggegevens) ---
+USER = os.environ.get('LIS_USER')
+PASS = os.environ.get('LIS_PASS')
+
 # --- GLOBALE STATE DICTIONARY (voor de webpagina) ---
 app_state = {
     "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}}, 
@@ -250,11 +254,7 @@ def statistieken():
     stats = {"total_changes": total_changes, "total_incoming": total_incoming, "total_outgoing": total_outgoing, "total_shifting": total_shifting, "top_ships": top_ships, "vervroegd": vervroegd_lijst, "vertraagd": vertraagd_lijst, "op_tijd": op_tijd_lijst}
     return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
 
-# --- HELPER FUNCTIES & OMGEVINGSVARIABELEN ---
-# *** HIER ZIJN ZE TERUG ***
-USER = os.environ.get('LIS_USER')
-PASS = os.environ.get('LIS_PASS')
-
+# --- HELPER FUNCTIES ---
 def parse_besteltijd(besteltijd_str):
     DEFAULT_TIME = datetime(1970, 1, 1) 
     if not besteltijd_str: return DEFAULT_TIME
@@ -327,7 +327,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v13, Multi-Page & Strict Uncheck) ---")
+    logging.info("--- Running haal_bestellingen_op (v15, Targeted Uncheck) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -336,13 +336,31 @@ def haal_bestellingen_op(session):
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        # --- STAP A: VERZAMEL ALLES ---
+        # --- STAP A: VERZAMEL ALLES EN GOOI 'BETROKKEN' WEG ---
         form_data = {}
         # Alle inputs
         for input_tag in soup_get.find_all('input'):
             name = input_tag.get('name')
             value = input_tag.get('value', '')
+            input_type = input_tag.get('type', 'text').lower()
+            
             if not name: continue
+            
+            # --- HIER IS DE TARGET FIX ---
+            # De gebruiker gaf aan dat het vinkje 'select_betrokken' heet
+            # We filteren op 'betrokken' om zeker te zijn (naam is ctl00$ContentPlaceHolder1$ctl01$select$betrokken)
+            if 'select$betrokken' in name:
+                logging.info(f"SPECIFIEK: 'Eigen reizen' vinkje ({name}) gedetecteerd en verwijderd.")
+                continue 
+            
+            # Veiligheidshalve: negeer nog steeds ELKE checkbox (voor het geval de naam weer anders is)
+            if input_type == 'checkbox':
+                continue 
+            
+            # Skip ook buttons
+            if input_type in ['submit', 'image', 'button', 'reset']:
+                continue
+
             form_data[name] = value
             
         # Alle selects
@@ -352,21 +370,7 @@ def haal_bestellingen_op(session):
                 option = select_tag.find('option', selected=True) or select_tag.find('option')
                 if option: form_data[name] = option.get('value', '')
 
-        # --- STAP B: SCHOONMAAK & FILTERS ---
-        # 1. Verwijder ALLE submit buttons, we voegen alleen de onze toe
-        keys_to_remove = [k for k in form_data.keys() if 'btn' in k or 'Button' in k]
-        for k in keys_to_remove: del form_data[k]
-
-        # 2. Verwijder 'Eigen reizen' (Dit is het belangrijkste!)
-        # We zoeken naar keys die 'EigenReizen' bevatten
-        eigen_reizen_key = next((k for k in form_data.keys() if 'EigenReizen' in k), None)
-        if eigen_reizen_key:
-            logging.info(f"Check gevonden en verwijderd: {eigen_reizen_key}")
-            del form_data[eigen_reizen_key]
-        else:
-            logging.warning("LET OP: Checkbox 'Eigen reizen' niet gevonden in inputs!")
-
-        # 3. Zet filters
+        # 3. Zet filters en knop
         form_data['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
         form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
 
@@ -379,13 +383,10 @@ def haal_bestellingen_op(session):
         alle_bestellingen = parse_table_from_soup(soup_page)
         
         # --- STAP D: PAGINERING LOOP ---
-        # Zoek naar paging links (javascript:__doPostBack('...','Page$2'))
-        # We proberen maximaal 5 pagina's door te lopen om de server niet te overbelasten
         current_page = 1
         max_pages = 5 
         
         while current_page < max_pages:
-            # Kijk of er een link is naar de volgende pagina
             next_page_num = current_page + 1
             paging_link = soup_page.find('a', href=re.compile(f"Page\${next_page_num}"))
             
@@ -395,40 +396,29 @@ def haal_bestellingen_op(session):
                 
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
             
-            # Voor paging moeten we de nieuwe ViewState gebruiken van de VORIGE post response
-            # En __EVENTTARGET instellen op de gridview
             page_form_data = {}
-            # Haal verse hidden fields uit de response van de vorige pagina
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup_page.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
             
-            # Stel de paging target in
-            # Meestal 'ctl00$ContentPlaceHolder1$ctl01$list$gv'
-            # We halen dit uit de href: javascript:__doPostBack('TARGET','ARGUMENT')
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else:
-                logging.warning("Kon paging target niet parsen.")
                 break
-                
-            # Filters moeten behouden blijven (maar geen knoppen)
-            # EigenReizen moet WEG blijven
             
             page_response = session.post(base_page_url, data=page_form_data)
             soup_page = BeautifulSoup(page_response.content, 'lxml')
             
             new_items = parse_table_from_soup(soup_page)
             if not new_items:
-                logging.info("Geen items op nieuwe pagina, stoppen.")
                 break
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
-            time.sleep(1) # Beleefd blijven voor de server
+            time.sleep(1) 
 
         logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
