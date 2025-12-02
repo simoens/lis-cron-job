@@ -36,7 +36,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Dit moet NA 'app = Flask(__name__)' staan
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
 # Gebruik environment variable of fallback wachtwoord
-app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
+app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'lislis' 
 app.config['BASIC_AUTH_FORCE'] = False # <--- AANGEPAST: Zet dit op False zodat cronjobs erdoor kunnen
 
 # Activeer de extensions
