@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v22, Respectful Lifecycle) ---")
+    logging.info("--- Running haal_bestellingen_op (v24, Empty Date & Two-Step) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -347,7 +347,7 @@ def haal_bestellingen_op(session):
                 value = input_tag.get('value', '')
                 if not name: continue
                 
-                # Checkbox 'betrokken' (Eigen reizen) verwijderen we ALTIJD uit de basisset
+                # Checkbox 'betrokken' (Eigen reizen) MOET WEG
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
@@ -359,58 +359,60 @@ def haal_bestellingen_op(session):
                 if not name: continue
                 
                 if skip_all_dropdown_logic:
-                    # In Stap 1 (ontgrendeling) moeten we de waarden EXACT laten zoals ze zijn
-                    # We pakken dus de 'selected' option
+                    # In Stap 1 (ontgrendeling): Behoud de huidige waarde
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
                 else:
-                    # In Stap 2 (Zoeken) gaan we slimme dingen doen (hieronder afgehandeld)
-                    # Maar deze functie is nu generiek, dus default behavior is 'pak selected'
+                    # In Stap 2 (Zoeken): Generieke logica (wordt overschreven)
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
             return data
 
         # =================================================================
-        # STAP 1: ONTGRENDELING (Alleen checkbox triggeren, rest met rust laten)
+        # STAP 1: ONTGRENDELING + DATUMS LEEGMAKEN
         # =================================================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event' (ZONDER dropdowns te wijzigen)...")
-        # We gebruiken True voor skip_logic, zodat we de MSC-agent waarde behouden en geen errors veroorzaken
+        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
+        # Trigger = Vinkje
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
-        # We forceren ALLEEN de Richting op Alle (/), want die is altijd beschikbaar en veilig
+        # BELANGRIJK: Datums expliciet LEEG maken (zoals gebruiker aangaf)
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        
+        # Richting = Alle
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
-        # Even spieken wat het resultaat is (waarschijnlijk 33 of 35 MSC schepen)
-        logging.info(f"Na Stap 1 (Ontgrendeling) gevonden items: {len(parse_table_from_soup(soup_step1))}")
+        logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
+        
+        # Even pauze voor de server (simuleer gebruiker)
+        time.sleep(1)
         
         # =================================================================
-        # STAP 2: DE ECHTE ZOEKOPDRACHT (Nu pas Agent wijzigen)
+        # STAP 2: DE ECHTE ZOEKOPDRACHT (Filters + Knop)
         # =================================================================
-        logging.info("STAP 2: Nu filters aanpassen en ZOEKEN...")
+        logging.info("STAP 2: Filters instellen en ZOEKEN...")
         
-        # We verzamelen opnieuw de data, maar nu van de NIEUWE pagina (waarop Agent enabled zou moeten zijn)
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Nu overschrijven we de Agent met 'no_value' (Alle)
-        # Omdat Stap 1 gelukt is, zou dit nu een geldige actie moeten zijn
+        # Forceer filters
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-        
-        # Ook de andere filters op 'Alle' (veiligheidshalve)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        # Datums NOGMAALS leegmaken
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
-        # Druk op de knop
+        # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
-        # Event targets wissen
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
@@ -424,7 +426,7 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 40 
+        max_pages = 50 # Verhoogd voor 725 resultaten
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -450,6 +452,9 @@ def haal_bestellingen_op(session):
             # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+            # Datums leeg houden
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
