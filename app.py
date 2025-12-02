@@ -37,7 +37,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
 # Gebruik environment variable of fallback wachtwoord
 app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
-app.config['BASIC_AUTH_FORCE'] = False # <--- AANGEPAST: Zet dit op False zodat cronjobs erdoor kunnen
+app.config['BASIC_AUTH_FORCE'] = False 
 
 # Activeer de extensions
 basic_auth = BasicAuth(app)
@@ -108,7 +108,7 @@ def main_task():
         logging.critical(f"FATAL ERROR in background thread: {e}", exc_info=True)
 
 @app.route('/')
-@basic_auth.required # <--- BEVEILIGD
+@basic_auth.required 
 def home():
     """Rendert de homepage, toont de laatste snapshot en wijzigingsgeschiedenis."""
     latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
@@ -137,7 +137,6 @@ def home():
                                 secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/trigger-run')
-# GEEN @basic_auth.required hier! De cronjob moet hier altijd bij kunnen.
 def trigger_run():
     """Een geheime URL endpoint die door een externe cron job wordt aangeroepen."""
     secret = request.args.get('secret') 
@@ -150,7 +149,7 @@ def trigger_run():
     return "OK: Scraper run triggered in background.", 200
 
 @app.route('/force-snapshot', methods=['POST'])
-@basic_auth.required # <--- BEVEILIGD (alleen ingelogde gebruikers mogen klikken)
+@basic_auth.required
 def force_snapshot_route():
     """Endpoint aangeroepen door de knop om een background run te triggeren."""
     secret = request.form.get('secret') 
@@ -163,7 +162,6 @@ def force_snapshot_route():
     return redirect(url_for('home'))
 
 @app.route('/status')
-# GEEN @basic_auth.required hier! JS polling kan anders vastlopen.
 def status_check():
     """Een lichtgewicht endpoint die de client-side JS kan pollen."""
     latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
@@ -176,7 +174,7 @@ def status_check():
             return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 @app.route('/logboek')
-@basic_auth.required # <--- BEVEILIGD
+@basic_auth.required 
 def logboek():
     """Toont een doorzoekbare geschiedenis van alle gedetecteerde wijzigingen."""
     search_term = request.args.get('q', '')
@@ -215,7 +213,7 @@ def logboek():
                             secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
-@basic_auth.required # <--- BEVEILIGD
+@basic_auth.required 
 def statistieken():
     """Toont een overzichtspagina met statistieken van de afgelopen 7 dagen."""
     
@@ -503,7 +501,12 @@ def haal_bestellingen_op(session):
                     if match:
                         bestelling['ReisId'] = match.group(1)
             bestellingen.append(bestelling)
-        logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden (Alle reizen).")
+        
+        # --- DEBUG LOGGING ---
+        # We loggen alle gevonden scheepsnamen om te zien of SCI Delhi ertussen zit
+        scheepsnamen = [b.get('Schip', 'Onbekend') for b in bestellingen]
+        logging.info(f"haal_bestellingen_op klaar. {len(bestellingen)} bestellingen gevonden. Namen: {', '.join(scheepsnamen)}")
+        
         return bestellingen
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
@@ -565,16 +568,20 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             
             # --- STAP 1: LOCATIE FILTER (MPET) ---
             # We kijken eerst of het schip qua locatie relevant is voor MPET
+            # AANGEPAST: We checken ALLEEN op 'mpet'
             is_mpet_relevant = False
+            relevant_keywords = ['mpet']
+
             if schip_type == 'I':
                 # Inkomend: Moet naar MPET gaan (Exit Point)
-                if 'mpet' in exit_point: is_mpet_relevant = True
+                if any(kw in exit_point for kw in relevant_keywords): is_mpet_relevant = True
             elif schip_type == 'U':
                 # Uitgaand: Moet van MPET komen (Entry Point)
-                if 'mpet' in entry_point: is_mpet_relevant = True
+                if any(kw in entry_point for kw in relevant_keywords): is_mpet_relevant = True
             elif schip_type == 'V':
                 # Verplaatsing: We tonen het als MPET betrokken is (Start of Einde)
-                if 'mpet' in entry_point or 'mpet' in exit_point: is_mpet_relevant = True
+                if any(kw in entry_point for kw in relevant_keywords) or any(kw in exit_point for kw in relevant_keywords):
+                    is_mpet_relevant = True
 
             # Als het locatie-filter faalt, slaan we het schip over, ongeacht de tijd
             if not is_mpet_relevant:
@@ -851,6 +858,18 @@ def main():
     
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session, nu_brussels)
     
+    # --- NIEUW: LOG HET AANTAL GEFILTERDE SCHEPEN ---
+    aantal_inkomend = len(snapshot_data.get("INKOMEND", []))
+    aantal_uitgaand = len(snapshot_data.get("UITGAAND", []))
+    aantal_shifting = len(snapshot_data.get("VERPLAATSING", []))
+    totaal_mpet = aantal_inkomend + aantal_uitgaand + aantal_shifting
+    
+    logging.info(f"FILTER RESULTAAT: Van de {len(nieuwe_bestellingen)} totaal gevonden schepen, zijn er {totaal_mpet} relevant voor MPET.")
+    logging.info(f"   - Inkomend: {aantal_inkomend}")
+    logging.info(f"   - Uitgaand: {aantal_uitgaand}")
+    logging.info(f"   - Shifting: {aantal_shifting}")
+    # -----------------------------------------------
+
     new_snapshot_entry = Snapshot(
         timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None), 
         content_data=snapshot_data
