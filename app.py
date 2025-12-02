@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v28, Strict Manual Override) ---")
+    logging.info("--- Running haal_bestellingen_op (v29, No Agent Force) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,12 +353,12 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects verzamelen (simpel)
+            # Selects verzamelen
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # Pak de huidige 'selected' option als basis
+                # We pakken de 'selected' option als basis, want 'Alle' zit daar nu in na de refresh
                 option = select_tag.find('option', selected=True) or select_tag.find('option')
                 if option: data[name] = option.get('value', '')
             return data
@@ -384,7 +384,7 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # VERLENGDE PAUZE (5 sec) - Zoals aangegeven door gebruiker
+        # VERLENGDE PAUZE (5 sec)
         time.sleep(5)
         
         # =================================================================
@@ -394,14 +394,16 @@ def haal_bestellingen_op(session):
         
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer filters HARD
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        # AANGEPAST: We verwijderen de Agent uit de form data als hij er per ongeluk in zit
+        # Want het veld verdwijnt als 'Eigen reizen' uit staat.
+        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
+            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
+            logging.info("Agent dropdown verwijderd uit request (want verdwenen).")
+
+        # Forceer overige filters
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-        
-        # HARDCODE BELOODSING (TYPE) OP LEEG
-        # Lege string is de waarde voor 'Alle' in de meeste ASP.NET dropdowns
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = ''
         
         # Datums NOGMAALS leegmaken
@@ -413,9 +415,6 @@ def haal_bestellingen_op(session):
         
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
-        
-        # Debug Log
-        logging.info(f"Versturen Type (filter_bld): '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -452,11 +451,10 @@ def haal_bestellingen_op(session):
             
             # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = ''
-            
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+            # GEEN agent meesturen
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
