@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v21, No-Heli Trap) ---")
+    logging.info("--- Running haal_bestellingen_op (v22, Respectful Lifecycle) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -340,99 +340,79 @@ def haal_bestellingen_op(session):
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup):
+        def verzamel_basis_form(soup, skip_all_dropdown_logic=False):
             data = {}
             for input_tag in soup.find_all('input'):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
                 
+                # Checkbox 'betrokken' (Eigen reizen) verwijderen we ALTIJD uit de basisset
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # --- INTELLIGENTE SELECT RESET (AANGEPAST) ---
+            # Selects verzamelen
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # Default behavior: Zoek 'Alle' of 'no_value'
-                val_to_use = ''
-                options = select_tag.find_all('option')
-                
-                # Check specifiek voor no_value (dat is de LIS code voor Alle)
-                found_no_value = False
-                for o in options:
-                    if o.get('value') == 'no_value':
-                        val_to_use = 'no_value'
-                        found_no_value = True
-                        break
-                
-                # Als we geen 'no_value' vinden, kijk dan of er eentje 'Alle' heet
-                if not found_no_value:
-                    for o in options:
-                        if 'alle' in o.text.lower():
-                            val_to_use = o.get('value', '')
-                            found_no_value = True
-                            break
-                            
-                # FALLBACK: Als we niks vinden, stuur dan GEEN eerste waarde meer!
-                # Dit voorkomt het Heli-probleem (waarbij de eerste optie 'H' is)
-                # Als we niks sturen (of lege string), zal ASP.NET de default houden of klagen, 
-                # maar niet per ongeluk Heli kiezen.
-                
-                if found_no_value:
-                    data[name] = val_to_use
+                if skip_all_dropdown_logic:
+                    # In Stap 1 (ontgrendeling) moeten we de waarden EXACT laten zoals ze zijn
+                    # We pakken dus de 'selected' option
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
                 else:
-                    # Stuur lege string als veilige fallback
-                    data[name] = ''
-                
+                    # In Stap 2 (Zoeken) gaan we slimme dingen doen (hieronder afgehandeld)
+                    # Maar deze functie is nu generiek, dus default behavior is 'pak selected'
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
             return data
 
-        # ==========================================
-        # STAP 1: DE "KLIK" OP HET VINKJE (Event Trigger)
-        # ==========================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get)
+        # =================================================================
+        # STAP 1: ONTGRENDELING (Alleen checkbox triggeren, rest met rust laten)
+        # =================================================================
+        logging.info("STAP 1: Verstuur 'Uncheck Event' (ZONDER dropdowns te wijzigen)...")
+        # We gebruiken True voor skip_logic, zodat we de MSC-agent waarde behouden en geen errors veroorzaken
+        form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
-        # Trigger naam
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
-        # Forceer belangrijke filters expliciet op 'no_value' (Alle)
-        # Dit is de code die we in de logs zagen voor "Alle"
+        # We forceren ALLEEN de Richting op Alle (/), want die is altijd beschikbaar en veilig
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
-        test_results = parse_table_from_soup(soup_step1)
-        logging.info(f"Na Stap 1 gevonden items: {len(test_results)}")
+        # Even spieken wat het resultaat is (waarschijnlijk 33 of 35 MSC schepen)
+        logging.info(f"Na Stap 1 (Ontgrendeling) gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # ==========================================
-        # STAP 2: ZOEKOPDRACHT
-        # ==========================================
-        logging.info("STAP 2: Druk op 'ZOEKEN' met nieuwe state...")
+        # =================================================================
+        # STAP 2: DE ECHTE ZOEKOPDRACHT (Nu pas Agent wijzigen)
+        # =================================================================
+        logging.info("STAP 2: Nu filters aanpassen en ZOEKEN...")
         
-        form_data_step2 = verzamel_basis_form(soup_step1)
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        # We verzamelen opnieuw de data, maar nu van de NIEUWE pagina (waarop Agent enabled zou moeten zijn)
+        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer filters ook hier
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        # Nu overschrijven we de Agent met 'no_value' (Alle)
+        # Omdat Stap 1 gelukt is, zou dit nu een geldige actie moeten zijn
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        
+        # Ook de andere filters op 'Alle' (veiligheidshalve)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
+        # Druk op de knop
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        
+        # Event targets wissen
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
-        
-        # DEBUG: Log wat we sturen in stap 2
-        logging.info(f"Stap 2 Agent: {form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$agt_naam')}")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
