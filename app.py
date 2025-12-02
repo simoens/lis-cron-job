@@ -12,6 +12,14 @@ import threading
 import time
 from flask_sqlalchemy import SQLAlchemy 
 import psycopg2 
+from flask_basicauth import BasicAuth
+
+# --- CONFIGURATIE ---
+app.config['BASIC_AUTH_USERNAME'] = 'mpet'  # Kies een gebruikersnaam
+app.config['BASIC_AUTH_PASSWORD'] = 'lislis'   # Kies een sterk wachtwoord
+app.config['BASIC_AUTH_FORCE'] = True               # Beveilig ALLES direct
+
+basic_auth = BasicAuth(app)
 
 # --- CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
