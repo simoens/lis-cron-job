@@ -363,17 +363,37 @@ def parse_besteltijd(besteltijd_str):
 def login(session):
     try:
         logging.info("Login attempt started...")
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"}
-        get_response = session.get("https://lis.loodswezen.be/Lis/Login.aspx", headers=headers)
+        # AANGEPAST: Headers geoptimaliseerd om meer op een echte browser te lijken
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        session.headers.update(headers)
+        
+        get_response = session.get("https://lis.loodswezen.be/Lis/Login.aspx")
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.text, 'lxml')
         viewstate = soup.find('input', {'name': '__VIEWSTATE'})
         if not viewstate:
             logging.error("Could not find __VIEWSTATE on login page.")
             return False
-        form_data = {'__VIEWSTATE': viewstate['value'],'ctl00$ContentPlaceHolder1$login$uname': USER,'ctl00$ContentPlaceHolder1$login$password': PASS,'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'}
-        login_response = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=form_data, headers=headers)
+            
+        form_data = {
+            '__VIEWSTATE': viewstate['value'],
+            'ctl00$ContentPlaceHolder1$login$uname': USER,
+            'ctl00$ContentPlaceHolder1$login$password': PASS,
+            'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
+        }
+        
+        # Voeg event validation toe als die bestaat (soms nodig bij ASP.NET)
+        evt_val = soup.find('input', {'name': '__EVENTVALIDATION'})
+        if evt_val:
+            form_data['__EVENTVALIDATION'] = evt_val['value']
+            
+        login_response = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=form_data)
         login_response.raise_for_status()
+        
         if "Login.aspx" not in login_response.url:
             logging.info("LOGIN SUCCESSFUL!")
             return True
@@ -384,79 +404,83 @@ def login(session):
         return False
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v11, Strict Browser Simulation) ---")
+    logging.info("--- Running haal_bestellingen_op (v12, Surgical POST) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
-        # STAP 1: Pagina ophalen
+        # STAP 1: Pagina ophalen (GET)
+        # We voegen een Referer header toe, want ASP.NET checkt dit soms bij postbacks
+        session.headers.update({'Referer': base_page_url})
+        
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        # STAP 2: VERZAMEL INPUTS (Selectief!)
+        # STAP 2: De essentiële ASP.NET velden verzamelen
+        # We pakken niet 'alles', maar alleen wat nodig is om state te behouden
         form_data = {}
+        for hidden_field in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION', '__EVENTTARGET', '__EVENTARGUMENT']:
+            tag = soup_get.find('input', {'name': hidden_field})
+            if tag:
+                form_data[hidden_field] = tag.get('value', '')
+
+        # STAP 3: Onze specifieke filters instellen
+        # Hier bouwen we de request handmatig op, dat is veiliger dan 'alles pakken en filteren'
         
-        # Inputs verwerken
-        for input_tag in soup_get.find_all('input'):
-            name = input_tag.get('name')
-            value = input_tag.get('value', '')
-            input_type = input_tag.get('type', 'text').lower()
-
-            if not name:
-                continue
-
-            # 2a. Skip submit/image/reset buttons. We sturen alleen de zoekknop later handmatig mee.
-            # Als we alle buttons meesturen, raakt ASP.NET in de war.
-            if input_type in ['submit', 'image', 'button', 'reset']:
-                continue
-            
-            # 2b. Checkbox/Radio: alleen meenemen als 'checked'
-            # Een browser stuurt niet-aangevinkte boxes NIET mee.
-            if input_type in ['checkbox', 'radio']:
-                if not input_tag.has_attr('checked'):
-                    continue
-            
-            # 2c. Specifiek filter: Eigen Reizen mag NOOIT mee
-            if 'chkEigenReizen' in name:
-                continue
-
-            form_data[name] = value
-        
-        # Selects (Dropdowns) verwerken
-        for select_tag in soup_get.find_all('select'):
-            name = select_tag.get('name')
-            if name:
-                option = select_tag.find('option', selected=True)
-                if not option: 
-                    option = select_tag.find('option')
-                if option:
-                    form_data[name] = option.get('value', '')
-
-        # STAP 3: FORCEREN VAN DE JUISTE KNOPPEN & FILTERS
-        
-        # Druk op de ZOEKEN knop
+        # a. De Zoekknop (essentieel!)
         form_data['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
         
-        # Forceer In/Uit/Alle op 'Alle' (zodat we alles krijgen)
-        # De value is meestal 'Alle', we overschrijven wat er ook geselecteerd was
-        if 'ctl00$ContentPlaceHolder1$rblInOut' in form_data:
-             form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
-        else:
-             # Als hij niet in form_data zat (omdat 'Alle' misschien niet default checked was), voegen we hem toe
-             form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
+        # b. In / Uit / Alle -> Zet op 'Alle'
+        form_data['ctl00$ContentPlaceHolder1$rblInOut'] = 'Alle'
+        
+        # c. Datumvelden (we pakken de defaults die de server ons gaf in de GET)
+        #    Dit voorkomt dat we een lege datum sturen waardoor de server crasht
+        for date_field in ['ctl00$ContentPlaceHolder1$txtDatumVan', 'ctl00$ContentPlaceHolder1$txtDatumTot']:
+            tag = soup_get.find('input', {'name': date_field})
+            if tag:
+                form_data[date_field] = tag.get('value', '')
+        
+        # d. Dropdowns (Agent, Van, Naar, Type) -> Zet Type op 'Alle' indien mogelijk
+        #    We pakken de defaults voor de rest
+        for select in soup_get.find_all('select'):
+            name = select.get('name')
+            if not name: continue
+            
+            # Als het de Type dropdown is, probeer 'Alle' te kiezen (meestal value='')
+            if 'ddlType' in name: # Gok op de naam van de dropdown, anders pak default
+                pass 
+            
+            # Pak standaard de geselecteerde optie
+            option = select.find('option', selected=True) or select.find('option')
+            if option:
+                form_data[name] = option.get('value', '')
 
+        # e. HET BELANGRIJKSTE: 'chkEigenReizen' NIET toevoegen aan form_data.
+        #    Hierdoor wordt het vinkje uitgezet.
+        
         # STAP 4: POST REQUEST
+        logging.info("Sending POST request to uncheck 'Eigen reizen'...")
         post_response = session.post(base_page_url, data=form_data)
         post_response.raise_for_status()
         
+        # STAP 5: Resultaat verwerken
         soup = BeautifulSoup(post_response.content, 'lxml')
         
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         if table is None: 
             logging.warning("De bestellingentabel werd niet gevonden na de zoekopdracht.")
-            # Als debug: checken of we terug op de login pagina zijn beland
+            
+            # DEBUG: Wat kregen we wel terug?
+            title = soup.find('title')
+            logging.info(f"Pagina titel ontvangen: {title.text if title else 'Geen titel'}")
+            
             if "Inloggen" in post_response.text:
-                 logging.warning("Lijkt erop dat we zijn uitgelogd of de sessie is verlopen.")
+                 logging.warning("Sessie lijkt verlopen, terug op inlogpagina.")
+            else:
+                 # Sla een klein stukje HTML op in de logs om te zien wat er mis is
+                 snippet = soup.get_text()[:200].replace('\n', ' ')
+                 logging.info(f"Snippet van pagina: {snippet}...")
+                 
             return []
             
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
