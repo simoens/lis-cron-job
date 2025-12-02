@@ -36,7 +36,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Dit moet NA 'app = Flask(__name__)' staan
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
 # Gebruik environment variable of fallback wachtwoord
-app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'lislis' 
+app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
 app.config['BASIC_AUTH_FORCE'] = False # <--- AANGEPAST: Zet dit op False zodat cronjobs erdoor kunnen
 
 # Activeer de extensions
@@ -454,12 +454,13 @@ def haal_pta_van_reisplan(session, reis_id):
         return None
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
-    """Filtert bestellingen om een snapshot te maken voor een specifiek tijdvenster."""
+    """Filtert bestellingen om een snapshot te maken, op basis van MPET locatie EN tijdvensters."""
     
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
     brussels_tz = pytz.timezone('Europe/Brussels') 
     
+    # --- TIJDGRENS DEFINITIES (Teruggeplaatst) ---
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
@@ -471,12 +472,29 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         try:
             entry_point = b.get('Entry Point', '').lower()
             exit_point = b.get('Exit Point', '').lower()
-            if 'zeebrugge' in entry_point:
-                continue 
+            schip_type = b.get("Type")
             
+            # --- STAP 1: LOCATIE FILTER (MPET) ---
+            # We kijken eerst of het schip qua locatie relevant is voor MPET
+            is_mpet_relevant = False
+            if schip_type == 'I':
+                # Inkomend: Moet naar MPET gaan (Exit Point)
+                if 'mpet' in exit_point: is_mpet_relevant = True
+            elif schip_type == 'U':
+                # Uitgaand: Moet van MPET komen (Entry Point)
+                if 'mpet' in entry_point: is_mpet_relevant = True
+            elif schip_type == 'V':
+                # Verplaatsing: We tonen het als MPET betrokken is (Start of Einde)
+                if 'mpet' in entry_point or 'mpet' in exit_point: is_mpet_relevant = True
+
+            # Als het locatie-filter faalt, slaan we het schip over, ongeacht de tijd
+            if not is_mpet_relevant:
+                continue
+
+            # --- STAP 2: TIJD PARSEN ---
             besteltijd_str_raw = b.get("Besteltijd")
             if not besteltijd_str_raw:
-                continue
+                continue # Zonder tijd kunnen we niet filteren op tijdvenster
 
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
             besteltijd_aware = None
@@ -490,9 +508,9 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             else:
                 besteltijd_aware = brussels_tz.localize(besteltijd_naive)
             
+            # --- STAP 3: STATUS & ETA BEREKENEN ---
             status_flag = "normal" 
             loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
-            schip_type = b.get("Type")
 
             eta_etd_aware = None
             eta_etd_str = b.get("ETA/ETD")
@@ -524,6 +542,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
             
             b['status_flag'] = status_flag
             
+            # --- STAP 4: TIJD FILTER & TOEVOEGEN ---
+            # Nu passen we de tijdvensters toe die we terug hebben aangezet
             show_ship = False
             
             if schip_type == "U":
@@ -553,7 +573,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                             elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
                             if eta_dt:
                                 b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
-                            
+                        
                     gefilterd["INKOMEND"].append(b)
             
             elif schip_type == "V": 
