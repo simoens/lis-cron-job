@@ -384,46 +384,59 @@ def login(session):
         return False
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v9, Alle Reizen & MPET-Filter) ---")
+    logging.info("--- Running haal_bestellingen_op (v10, Alle Reizen Robuust) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
-        # STAP 1: Eerst de pagina ophalen om de 'ViewState' te krijgen
-        # Dit is nodig om een geldig formulier terug te kunnen sturen
+        # STAP 1: Pagina ophalen
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        viewstate = soup_get.find('input', {'name': '__VIEWSTATE'})
-        viewstate_gen = soup_get.find('input', {'name': '__VIEWSTATEGENERATOR'})
-        event_validation = soup_get.find('input', {'name': '__EVENTVALIDATION'})
+        # STAP 2: VERZAMEL ALLE INPUTS (Veel veiliger dan handmatig ViewState pakken)
+        form_data = {}
         
-        if not viewstate:
-            logging.error("Kon __VIEWSTATE niet vinden voor de zoekopdracht.")
-            return []
+        # Alle <input> velden (hidden, text, etc.)
+        for input_tag in soup_get.find_all('input'):
+            name = input_tag.get('name')
+            value = input_tag.get('value', '')
+            if name:
+                form_data[name] = value
+        
+        # Alle <select> velden (dropdowns), inclusief de geselecteerde optie
+        for select_tag in soup_get.find_all('select'):
+            name = select_tag.get('name')
+            if name:
+                option = select_tag.find('option', selected=True)
+                if not option: # Als er niks expliciet 'selected' is, pak de eerste
+                    option = select_tag.find('option')
+                if option:
+                    form_data[name] = option.get('value', '')
 
-        # STAP 2: We bouwen een formulier na.
-        # Het geheim is: Als je een checkbox UIT wilt zetten, stuur je hem gewoon NIET mee.
-        # We sturen dus wel de knop 'ZOEKEN', maar niet 'chkEigenReizen'.
-        form_data = {
-            '__VIEWSTATE': viewstate['value'],
-            '__VIEWSTATEGENERATOR': viewstate_gen['value'] if viewstate_gen else '',
-            '__EVENTVALIDATION': event_validation['value'] if event_validation else '',
-            'ctl00$ContentPlaceHolder1$btnZoeken': 'ZOEKEN' # Dit simuleert de klik op de knop
-            # BELANGRIJK: De regel hieronder laten we weg, dat staat gelijk aan uitvinken:
-            # 'ctl00$ContentPlaceHolder1$chkEigenReizen': 'on' 
-        }
+        # STAP 3: WIJZIGINGEN AANBRENGEN
+        
+        # Zorg dat de zoekknop wordt 'ingedrukt'
+        if 'ctl00$ContentPlaceHolder1$btnZoeken' not in form_data:
+             form_data['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
 
-        # We sturen de POST request (het 'klikken' op de knop)
+        # VERWIJDER HET VINKJE VOOR EIGEN REIZEN
+        # Door de key helemaal uit form_data te halen, vinkt de server hem uit.
+        keys_to_remove = [k for k in form_data.keys() if 'chkEigenReizen' in k]
+        for k in keys_to_remove:
+            del form_data[k]
+            logging.info(f"Vinkje 'Eigen reizen' verwijderd uit request: {k}")
+
+        # STAP 4: POST REQUEST
         post_response = session.post(base_page_url, data=form_data)
         post_response.raise_for_status()
         
-        # We gebruiken nu de resultaten van de POST (waarin alle reizen zitten)
         soup = BeautifulSoup(post_response.content, 'lxml')
         
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
         if table is None: 
             logging.warning("De bestellingentabel werd niet gevonden na de zoekopdracht.")
+            # Log de HTML lengte voor debugging
+            logging.warning(f"Response lengte: {len(post_response.text)}")
             return []
             
         kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
