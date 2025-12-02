@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v26, Force Type Alle) ---")
+    logging.info("--- Running haal_bestellingen_op (v27, Smart 'Alle' Reader) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,24 +353,44 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects verzamelen
+            # --- INTELLIGENTE SELECT RESET (AANGEPAST) ---
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # DEBUG: Log alle opties voor filter_bld om zeker te zijn
-                if 'filter_bld' in name:
-                    opts = [f"{o.text}={o.get('value')}" for o in select_tag.find_all('option')]
-                    logging.info(f"DEBUG: Opties voor {name}: {opts}")
-
                 if skip_all_dropdown_logic:
-                    # In Stap 1: Behoud de huidige waarde
+                    # Stap 1: Behoud state
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
                 else:
-                    # In Stap 2: Generiek (overschreven)
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
+                    # Stap 2: Zoek naar 'Alle'
+                    options = select_tag.find_all('option')
+                    val_to_use = None
+                    
+                    # 1. Zoek op tekst 'Alle'
+                    for o in options:
+                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
+                            val_to_use = o.get('value', '')
+                            break
+                    
+                    # 2. Zoek op value 'no_value'
+                    if val_to_use is None:
+                        for o in options:
+                            if o.get('value') == 'no_value':
+                                val_to_use = 'no_value'
+                                break
+                                
+                    # 3. Fallback: als het filter_bld is en we vonden niks, doe NIKS (laat leeg)
+                    #    Dit voorkomt dat we de eerste optie (Heli) pakken
+                    if val_to_use is None:
+                        if 'filter_bld' in name:
+                             val_to_use = '' # Laat leeg, vaak pakt de server dan default 'Alle'
+                        else:
+                             # Voor andere velden: pak de eerste
+                             if options: val_to_use = options[0].get('value', '')
+                    
+                    data[name] = val_to_use
+                
             return data
 
         # =================================================================
@@ -393,24 +413,18 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # VERLENGDE PAUZE (4 sec)
-        time.sleep(4)
+        time.sleep(2)
         
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
         logging.info("STAP 2: Filters instellen en ZOEKEN...")
         
+        # Nu gebruiken we de SLIMME logica die 'Alle' zoekt
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer filters
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
+        # Forceer Richting op Alle (want die is radio button, geen select)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-        
-        # FORCEER TYPE OOK OP 'no_value' (Dit was de vermoedelijke fout)
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
         
         # Datums NOGMAALS leegmaken
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
@@ -421,6 +435,9 @@ def haal_bestellingen_op(session):
         
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
+        
+        # Log wat we sturen voor filter_bld
+        logging.info(f"Stap 2 Type/Bld waarde: '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -457,8 +474,14 @@ def haal_bestellingen_op(session):
             
             # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
+            # We moeten hier ook de slimme waarden herhalen, anders reset hij misschien
+            # Voor nu gokken we dat viewstate dit afhandelt, maar voor zekerheid:
+            # (We kunnen de waarden uit form_data_step2 hergebruiken)
+            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam', 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']:
+                if k in form_data_step2:
+                    page_form_data[k] = form_data_step2[k]
+            
+            # Datums leeg
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
