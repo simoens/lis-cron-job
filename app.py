@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v17, Debug Dump & Two-Step) ---")
+    logging.info("--- Running haal_bestellingen_op (v18, Fixed Field Names & Two-Step) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -339,13 +339,6 @@ def haal_bestellingen_op(session):
         get_response.raise_for_status()
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        # --- DEBUG: DUMP ALLE INPUTS ---
-        # Dit helpt ons te zien wat er nu ECHT op de pagina staat
-        logging.info("--- START INPUT DUMP ---")
-        for inp in soup_get.find_all('input'):
-            logging.info(f"Input: name='{inp.get('name')}', type='{inp.get('type')}', value='{inp.get('value')}'")
-        logging.info("--- END INPUT DUMP ---")
-
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
         def verzamel_basis_form(soup):
             data = {}
@@ -353,12 +346,15 @@ def haal_bestellingen_op(session):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
-                # Skip checkbox ALTIJD in de basis
+                
+                # Checkbox 'betrokken' (Eigen reizen) MOET WEG
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
-                # Skip buttons
+                
+                # Buttons overslaan
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
+                
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if name:
@@ -367,29 +363,37 @@ def haal_bestellingen_op(session):
             return data
 
         # ==========================================
-        # STAP 1: DE "KLIK" OP HET VINKJE
+        # STAP 1: DE "KLIK" OP HET VINKJE (Event Trigger)
         # ==========================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event' (Target: select$betrokken)...")
+        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get)
         
-        # Triggeren
-        target_name = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
-        form_data_step1['__EVENTTARGET'] = target_name
+        # Trigger naam: ctl00$ContentPlaceHolder1$ctl01$select$betrokken
+        form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
+        
+        # BELANGRIJK: De juiste naam voor 'Richting' (In/Uit/Alle) is select$richting
+        # En de waarde voor 'Alle' is '/' (uit jouw logs)
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
+        test_results = parse_table_from_soup(soup_step1)
+        logging.info(f"Na Stap 1 (Uncheck) gevonden items: {len(test_results)}")
+        current_soup = soup_step1
+        
         # ==========================================
         # STAP 2: ZOEKOPDRACHT UITVOEREN
         # ==========================================
+        # We drukken ALTIJD op zoeken voor de zekerheid, om filters te bevestigen
         logging.info("STAP 2: Druk op 'ZOEKEN' met nieuwe state...")
         
-        form_data_step2 = verzamel_basis_form(soup_step1) # Gebruik de NIEUWE state van Step 1
-        form_data_step2['ctl00$ContentPlaceHolder1$btnZoeken'] = 'ZOEKEN'
+        form_data_step2 = verzamel_basis_form(soup_step1)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken' # Naam uit logs!
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' # Waarde uit logs!
         
-        # Zorg dat we geen event targets meer sturen
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
@@ -404,14 +408,13 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 20 
+        max_pages = 30 # Voor ~600 items (30 items/page = 20 pages)
         
         while current_page < max_pages:
             next_page_num = current_page + 1
             paging_link = current_soup.find('a', href=re.compile(f"Page\${next_page_num}"))
             
             if not paging_link:
-                logging.info(f"Geen link gevonden voor pagina {next_page_num}. Stoppen.")
                 break
             
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
@@ -429,6 +432,9 @@ def haal_bestellingen_op(session):
             else:
                 break
             
+            # Zorg dat de radio button meegaat, anders reset hij misschien
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
             
@@ -437,7 +443,7 @@ def haal_bestellingen_op(session):
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
-            time.sleep(0.5) 
+            time.sleep(0.3) 
 
         logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
