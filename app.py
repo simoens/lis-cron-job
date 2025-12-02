@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v20, Smart Dropdown Reset) ---")
+    logging.info("--- Running haal_bestellingen_op (v21, No-Heli Trap) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -346,39 +346,47 @@ def haal_bestellingen_op(session):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
-                # Remove Checkbox + Buttons
+                
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # --- INTELLIGENTE SELECT RESET ---
+            # --- INTELLIGENTE SELECT RESET (AANGEPAST) ---
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # We loggen de opties om te leren
-                options = select_tag.find_all('option')
-                debug_opts = [f"{o.text}={o.get('value')}" for o in options[:3]]
-                logging.info(f"Dropdown '{name}' gevonden. Opties: {debug_opts}...")
-                
-                # Probeer 'Alle' te vinden
+                # Default behavior: Zoek 'Alle' of 'no_value'
                 val_to_use = ''
-                # Zoek naar een optie die 'all' of 'alle' in de tekst heeft, of een lege value heeft
-                found_all = False
+                options = select_tag.find_all('option')
+                
+                # Check specifiek voor no_value (dat is de LIS code voor Alle)
+                found_no_value = False
                 for o in options:
-                    txt = o.text.lower()
-                    val = o.get('value', '')
-                    if 'alle' in txt or 'all' in txt or val == '' or val == '-1':
-                        val_to_use = val
-                        found_all = True
+                    if o.get('value') == 'no_value':
+                        val_to_use = 'no_value'
+                        found_no_value = True
                         break
                 
-                if not found_all and options:
-                    # Fallback: Pak de eerste
-                    val_to_use = options[0].get('value', '')
+                # Als we geen 'no_value' vinden, kijk dan of er eentje 'Alle' heet
+                if not found_no_value:
+                    for o in options:
+                        if 'alle' in o.text.lower():
+                            val_to_use = o.get('value', '')
+                            found_no_value = True
+                            break
+                            
+                # FALLBACK: Als we niks vinden, stuur dan GEEN eerste waarde meer!
+                # Dit voorkomt het Heli-probleem (waarbij de eerste optie 'H' is)
+                # Als we niks sturen (of lege string), zal ASP.NET de default houden of klagen, 
+                # maar niet per ongeluk Heli kiezen.
                 
-                data[name] = val_to_use
+                if found_no_value:
+                    data[name] = val_to_use
+                else:
+                    # Stuur lege string als veilige fallback
+                    data[name] = ''
                 
             return data
 
@@ -388,9 +396,16 @@ def haal_bestellingen_op(session):
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get)
         
+        # Trigger naam
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' # Alle richtingen
+        
+        # Forceer belangrijke filters expliciet op 'no_value' (Alle)
+        # Dit is de code die we in de logs zagen voor "Alle"
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
@@ -400,16 +415,24 @@ def haal_bestellingen_op(session):
         logging.info(f"Na Stap 1 gevonden items: {len(test_results)}")
         
         # ==========================================
-        # STAP 2: ZOEKOPDRACHT (Bevestiging)
+        # STAP 2: ZOEKOPDRACHT
         # ==========================================
         logging.info("STAP 2: Druk op 'ZOEKEN' met nieuwe state...")
         
         form_data_step2 = verzamel_basis_form(soup_step1)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        
+        # Forceer filters ook hier
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
         
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
+        
+        # DEBUG: Log wat we sturen in stap 2
+        logging.info(f"Stap 2 Agent: {form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$agt_naam')}")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -444,7 +467,9 @@ def haal_bestellingen_op(session):
             else:
                 break
             
+            # Behoud filters bij paging
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
