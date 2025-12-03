@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v30, Clean Slate) ---")
+    logging.info("--- Running haal_bestellingen_op (v31, Agent Re-Inclusion) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,25 +353,53 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects verzamelen
+            # Selects verzamelen (SLIMME LOGICA TERUG)
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # AGENT NIET MEENEMEN als we in Stap 2 zitten (want dan is ie weg)
-                if not skip_all_dropdown_logic and 'agt_naam' in name:
-                    continue
+                if skip_all_dropdown_logic:
+                    # Stap 1: Behoud
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
+                else:
+                    # Stap 2: Zoek 'Alle'
+                    options = select_tag.find_all('option')
+                    val_to_use = None
+                    
+                    # 1. Zoek op tekst 'Alle'
+                    for o in options:
+                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
+                            val_to_use = o.get('value', '')
+                            break
+                    
+                    # 2. Zoek op value 'no_value'
+                    if val_to_use is None:
+                        for o in options:
+                            if o.get('value') == 'no_value':
+                                val_to_use = 'no_value'
+                                break
+                    
+                    # 3. Fallback: Pak eerste (voor Van/Naar/Agent)
+                    if val_to_use is None and options:
+                        val_to_use = options[0].get('value', '')
+                    
+                    # Als het filter_bld is en we vonden niks, laat leeg om Heli trap te voorkomen
+                    if 'filter_bld' in name and val_to_use == 'H': # Stel dat 'H' de eerste is
+                        val_to_use = ''
 
-                # Behoud de waarde die de server stuurt (default)
-                option = select_tag.find('option', selected=True) or select_tag.find('option')
-                if option: data[name] = option.get('value', '')
+                    data[name] = val_to_use if val_to_use is not None else ''
+                    
+                    # LOG de keuze (voor debugging)
+                    if 'agt_naam' in name:
+                        logging.info(f"Agent filter ingesteld op: '{val_to_use}'")
+
             return data
 
         # =================================================================
         # STAP 1: ONTGRENDELING
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        # In Stap 1 is Agent er nog WEL, dus skip_logic=True (behoud MSC waarde)
         form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
@@ -388,19 +416,17 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        # PAUZE
         time.sleep(3)
         
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Agent veld weglaten)...")
+        logging.info("STAP 2: ZOEKEN (Met Agent op Alle)...")
         
-        # Hier gebruiken we False: Als de soup geen agent veld heeft, komt hij niet in data.
-        # En als hij er WEL is, filteren we hem expliciet eruit in de functie.
+        # Nu gebruiken we False, dus hij zoekt actief naar 'Alle' opties in dropdowns
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer overige filters
+        # Forceer Richting (Radio)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
         # Datums NOGMAALS leegmaken
@@ -446,11 +472,18 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters
+            # Behoud filters bij paging (gebruik waarden uit stap 2)
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+            # Kopieer dropdowns van stap 2 om zeker te zijn
+            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam', 
+                      'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
+                if k in form_data_step2:
+                    page_form_data[k] = form_data_step2[k]
+
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-            # GEEN agent
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
