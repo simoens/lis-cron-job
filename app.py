@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v40, Pure Manual Emulation) ---")
+    logging.info("--- Running haal_bestellingen_op (v41, Manual + Clear Date Fix) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -342,18 +342,18 @@ def haal_bestellingen_op(session):
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
         def verzamel_basis_form(soup):
             data = {}
-            # Inputs
             for input_tag in soup.find_all('input'):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
-                # Checkbox 'betrokken' (Eigen reizen) ALTIJD eruit halen
+                
+                # Checkbox 'betrokken' MOET WEG (Uncheck)
                 if 'select$betrokken' in name: continue 
+                # Radio buttons: Neem alles mee (wordt later overschreven)
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects (PAK GEWOON WAT ER STAAT)
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
@@ -362,12 +362,11 @@ def haal_bestellingen_op(session):
             return data
 
         # =================================================================
-        # STAP 1: KLIK OP VINKJE (Eigen Reizen UIT)
+        # STAP 1: VINKJE UITZETTEN
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get)
         
-        # Trigger de checkbox change event
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
@@ -376,28 +375,43 @@ def haal_bestellingen_op(session):
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
-        
-        # WACHT (Zoals je manueel ook doet)
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: KLIK OP ZOEKEN (Zonder iets te veranderen!)
+        # STAP 2: ZOEKEN (MET DATUM LEEG + CORRECTE FILTERS)
         # =================================================================
-        logging.info("STAP 2: Klik op ZOEKEN (Met formulier zoals ontvangen)...")
+        logging.info("STAP 2: Klik op ZOEKEN (Datums leeg, Richting=Alle)...")
         
-        # We pakken de state precies zoals de server hem teruggaf in Stap 1
         form_data_step2 = verzamel_basis_form(soup_step1)
         
-        # We voegen ALLEEN de knop toe
+        # Voeg knop toe
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
-        # Zorg dat we geen Event Targets meesturen van de vorige stap
+        # 1. DATUMS LEEGMAKEN (Cruciaal voor 725 resultaten)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        
+        # 2. RICHTING FORCEER OP ALLE (/)
+        # Omdat radio buttons tricky zijn in verzamel_basis_form, zetten we hem hier hard.
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+
+        # Zorg dat we geen Event Targets meesturen
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
         
+        # DEBUG: Check of we nog ingelogd zijn
+        if "Inloggen" in response_step2.text:
+            logging.error("FOUT: Sessie verlopen of uitgelogd in Stap 2!")
+            return []
+        
+        # DEBUG: Check foutmeldingen in body
+        if len(parse_table_from_soup(current_soup)) == 0:
+            snippet = current_soup.get_text()[:300].replace('\n', ' ')
+            logging.info(f"DEBUG: 0 resultaten. Pagina snippet: {snippet}")
+
         # ==========================================
         # STAP 3: PAGINERING
         # ==========================================
@@ -428,10 +442,14 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters (Kopieer alles van stap 2 behalve knop)
+            # Filters kopiëren van stap 2
             for k, v in form_data_step2.items():
                 if k not in page_form_data and 'btnSearch' not in k:
                     page_form_data[k] = v
+            
+            # Datums expliciet leeg houden (anders komen ze misschien uit viewstate terug?)
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
