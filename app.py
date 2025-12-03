@@ -162,7 +162,7 @@ def logboek():
     for change in all_changes_query:
         if change.content:
             ship_names_found = ship_regex.findall(change.content)
-            for name in ship_names_found:
+            for name in ship_names:
                 unique_ships.add(name.strip()) 
     all_ships_sorted = sorted(list(unique_ships))
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v36, Key Removal & Error Check) ---")
+    logging.info("--- Running haal_bestellingen_op (v37, Safe Field Handling) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -381,8 +381,8 @@ def haal_bestellingen_op(session):
                                 val_to_use = 'no_value'
                                 break
                     
-                    # 3. Fallback voor Type (Beloodsing): Als we niks vinden, pak '/' (bevestigd in v34 logs)
-                    #    Let op: v35 faalde met '/', maar toen was Agent ook nog fout.
+                    # 3. Fallback voor Type (Beloodsing):
+                    #    v35 logs lieten zien dat 'Alle' = '/'
                     if val_to_use is None:
                         if 'filter_bld' in name:
                              val_to_use = '/' 
@@ -402,7 +402,7 @@ def haal_bestellingen_op(session):
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
-        # Datums LEEG (of verwijder ze, laten we leeg proberen want dat lijkt HTML standaard)
+        # Datums LEEG
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
@@ -413,27 +413,28 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
-        time.sleep(5)
+        time.sleep(3)
         
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Keys verwijderen)...")
+        logging.info("STAP 2: ZOEKEN (Veilige modus)...")
         
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # AGENT WEGHALEN
+        # DEBUG: Check of Agent nog bestaat
         if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
-            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
+            logging.info("Agent veld GEVONDEN in HTML, zetten op 'no_value'")
+            form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
+        else:
+            logging.info("Agent veld NIET GEVONDEN in HTML (correct, want eigen reizen is uit).")
 
         # Forceer Richting
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
-        # DATUMS: We VERWIJDEREN de keys helemaal.
-        if 'ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate' in form_data_step2:
-            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate']
-        if 'ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate' in form_data_step2:
-            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate']
+        # Datums LEEG (Key behouden, waarde leeg)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
@@ -441,13 +442,11 @@ def haal_bestellingen_op(session):
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
+        # DEBUG LOG
+        logging.info(f"Sending Step 2 (Type): '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
+        
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
-        
-        # ERROR CHECK
-        if len(parse_table_from_soup(current_soup)) == 0:
-             # Log body snippet
-             logging.info(f"DEBUG: Pagina body snippet bij 0 results: {current_soup.get_text()[:500].replace(chr(10), ' ')}")
         
         # ==========================================
         # STAP 3: PAGINERING
@@ -481,11 +480,15 @@ def haal_bestellingen_op(session):
             
             # Behoud filters
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+            # Kopieer Type en Havens
+            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
+                if k in form_data_step2:
+                    page_form_data[k] = form_data_step2[k]
             
-            if 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld' in form_data_step2:
-                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']
-
-            # GEEN datums meesturen (dus ook niet als lege string)
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
