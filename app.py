@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v31, Agent Re-Inclusion) ---")
+    logging.info("--- Running haal_bestellingen_op (v32, Dynamic Field Discovery) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,7 +353,7 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects verzamelen (SLIMME LOGICA TERUG)
+            # Selects verzamelen
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
@@ -380,24 +380,19 @@ def haal_bestellingen_op(session):
                                 val_to_use = 'no_value'
                                 break
                     
-                    # 3. Fallback: Pak eerste (voor Van/Naar/Agent)
+                    # 3. Fallback: Pak eerste
                     if val_to_use is None and options:
                         val_to_use = options[0].get('value', '')
                     
-                    # Als het filter_bld is en we vonden niks, laat leeg om Heli trap te voorkomen
-                    if 'filter_bld' in name and val_to_use == 'H': # Stel dat 'H' de eerste is
-                        val_to_use = ''
+                    # Correctie: als 'agt_naam' niet meer in de DOM zit, wordt deze loop niet eens gestart voor agt_naam
+                    # Dus we hoeven hier niet expliciet te filteren op agt_naam
 
                     data[name] = val_to_use if val_to_use is not None else ''
-                    
-                    # LOG de keuze (voor debugging)
-                    if 'agt_naam' in name:
-                        logging.info(f"Agent filter ingesteld op: '{val_to_use}'")
 
             return data
 
         # =================================================================
-        # STAP 1: ONTGRENDELING
+        # STAP 1: ONTGRENDELING (VINKJE UIT)
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
         form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
@@ -421,11 +416,15 @@ def haal_bestellingen_op(session):
         # =================================================================
         # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Met Agent op Alle)...")
+        logging.info("STAP 2: ZOEKEN (Dynamische Form Build)...")
         
-        # Nu gebruiken we False, dus hij zoekt actief naar 'Alle' opties in dropdowns
+        # We verzamelen data van de NIEUWE pagina.
+        # Als Agent hier niet op staat, komt hij niet in form_data_step2.
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
+        # DEBUG: Print alle keys die we gaan sturen
+        logging.info(f"Keys die we sturen in Stap 2: {list(form_data_step2.keys())}")
+
         # Forceer Richting (Radio)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
@@ -472,13 +471,14 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters bij paging (gebruik waarden uit stap 2)
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            # Kopieer dropdowns van stap 2 om zeker te zijn
-            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam', 
-                      'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
-                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
-                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
+            # Kopieer alleen filters die bestaan
+            # We gebruiken de keys uit form_data_step2, want die waren correct voor deze view
+            keys_to_keep = ['ctl00$ContentPlaceHolder1$ctl01$select$richting', 
+                            'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
+                            'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
+                            'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']
+            
+            for k in keys_to_keep:
                 if k in form_data_step2:
                     page_form_data[k] = form_data_step2[k]
 
