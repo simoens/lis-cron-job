@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v42, Safe Wide Dates) ---")
+    logging.info("--- Running haal_bestellingen_op (v43, Wide Date Range & Agent Check) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -340,80 +340,106 @@ def haal_bestellingen_op(session):
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup):
+        def verzamel_basis_form(soup, skip_all_dropdown_logic=False):
             data = {}
             for input_tag in soup.find_all('input'):
                 name = input_tag.get('name')
                 value = input_tag.get('value', '')
                 if not name: continue
                 
-                # Checkbox 'betrokken' MOET WEG (Uncheck)
+                # Checkbox 'betrokken' (Eigen reizen) MOET WEG
                 if 'select$betrokken' in name: continue 
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
+            # Selects verzamelen
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
-                option = select_tag.find('option', selected=True) or select_tag.find('option')
-                if option: data[name] = option.get('value', '')
+                
+                if skip_all_dropdown_logic:
+                    # Stap 1: Behoud
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
+                else:
+                    # Stap 2: Zoek 'Alle' (no_value)
+                    options = select_tag.find_all('option')
+                    val_to_use = None
+                    
+                    for o in options:
+                        if o.get('value') == 'no_value' or 'alle' in o.text.lower():
+                            val_to_use = o.get('value', '')
+                            break
+                    
+                    # Fallback
+                    if val_to_use is None:
+                        if 'filter_bld' in name:
+                             val_to_use = '' 
+                        else:
+                             if options: val_to_use = options[0].get('value', '')
+
+                    data[name] = val_to_use if val_to_use is not None else ''
             return data
 
         # =================================================================
-        # STAP 1: VINKJE UITZETTEN
+        # STAP 1: ONTGRENDELING
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get)
+        form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
+        
+        # We laten de datums in stap 1 even met rust (default server values) om geen crash te riskeren
+        # Het uitvinken is het enige doel hier.
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
+        
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: ZOEKEN (MET RUIME DATUM MARGE)
+        # STAP 2: ZOEKEN MET RUIME DATUM (ipv leeg)
         # =================================================================
-        logging.info("STAP 2: Klik op ZOEKEN (Datum -1 tot +30, Agent weg)...")
+        logging.info("STAP 2: ZOEKEN (Met ruime datums om crash te voorkomen)...")
         
-        form_data_step2 = verzamel_basis_form(soup_step1)
+        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # AGENT WEGHALEN
-        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
-            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
-
-        # Voeg knop toe
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        # Forceer Richting
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
-        # DATUMS INVULLEN (Om crash te voorkomen, maar ruim genoeg)
-        # We pakken gisteren tot over 30 dagen, dat dekt praktisch alles wat openstaat
+        # DATUMS INVULLEN (dd/mm/yyyy)
+        # -30 dagen tot +30 dagen. Dit is veilig en dekt alles.
         date_fmt = "%d/%m/%Y"
         today = datetime.now()
-        yesterday = today - timedelta(days=1)
-        future = today + timedelta(days=30)
+        start_date = today - timedelta(days=30)
+        end_date = today + timedelta(days=30)
         
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = yesterday.strftime(date_fmt)
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = future.strftime(date_fmt)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = start_date.strftime(date_fmt)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = end_date.strftime(date_fmt)
         
-        # Richting = Alle
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-
+        # Agent: Als de key er nog is, zetten we hem op no_value. 
+        # Als de key weg is (door verzamel_basis_form omdat hij uit DOM is), dan is dat ook goed.
+        # We doen geen expliciete 'del' meer, dat was riskant in v42.
+        
+        # Druk op knop
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
         
-        # Check op Foutmelding
         if "LIS – Fout" in response_step2.text:
-             logging.error("CRITICAL: Server gaf 'LIS - Fout' melding.")
+             logging.error("CRITICAL: Server gaf 'LIS - Fout' bij ruime datums.")
              return []
-
+        
         # ==========================================
         # STAP 3: PAGINERING
         # ==========================================
@@ -444,10 +470,21 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Filters kopiëren
-            for k, v in form_data_step2.items():
-                if k not in page_form_data and 'btnSearch' not in k:
-                    page_form_data[k] = v
+            # Behoud filters
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+            # Datums behouden
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = start_date.strftime(date_fmt)
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = end_date.strftime(date_fmt)
+            
+            # Kopieer dropdowns
+            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
+                if k in form_data_step2:
+                    page_form_data[k] = form_data_step2[k]
+            # Agent kopieren ALS hij bestond
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
+                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
