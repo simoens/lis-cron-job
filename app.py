@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v32, Dynamic Field Discovery) ---")
+    logging.info("--- Running haal_bestellingen_op (v33, Dynamic + Force Date Clear) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -340,7 +340,7 @@ def haal_bestellingen_op(session):
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup, skip_all_dropdown_logic=False):
+        def verzamel_basis_form(soup):
             data = {}
             for input_tag in soup.find_all('input'):
                 name = input_tag.get('name')
@@ -358,51 +358,20 @@ def haal_bestellingen_op(session):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                if skip_all_dropdown_logic:
-                    # Stap 1: Behoud
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
-                else:
-                    # Stap 2: Zoek 'Alle'
-                    options = select_tag.find_all('option')
-                    val_to_use = None
-                    
-                    # 1. Zoek op tekst 'Alle'
-                    for o in options:
-                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
-                            val_to_use = o.get('value', '')
-                            break
-                    
-                    # 2. Zoek op value 'no_value'
-                    if val_to_use is None:
-                        for o in options:
-                            if o.get('value') == 'no_value':
-                                val_to_use = 'no_value'
-                                break
-                    
-                    # 3. Fallback: Pak eerste
-                    if val_to_use is None and options:
-                        val_to_use = options[0].get('value', '')
-                    
-                    # Correctie: als 'agt_naam' niet meer in de DOM zit, wordt deze loop niet eens gestart voor agt_naam
-                    # Dus we hoeven hier niet expliciet te filteren op agt_naam
-
-                    data[name] = val_to_use if val_to_use is not None else ''
-
+                # Default: Pak huidige selectie.
+                # We overschrijven dit later met 'Alle' (no_value) waar nodig.
+                option = select_tag.find('option', selected=True) or select_tag.find('option')
+                if option: data[name] = option.get('value', '')
             return data
 
         # =================================================================
         # STAP 1: ONTGRENDELING (VINKJE UIT)
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
+        form_data_step1 = verzamel_basis_form(soup_get)
         
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
-        
-        # Datums LEEG
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
@@ -411,32 +380,36 @@ def haal_bestellingen_op(session):
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
         
+        # PAUZE voor de server
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: DE ECHTE ZOEKOPDRACHT
+        # STAP 2: DE ECHTE ZOEKOPDRACHT (DATA LEEG, FILTERS ALLE)
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Dynamische Form Build)...")
+        logging.info("STAP 2: ZOEKEN (Datums wissen, Filters op Alle)...")
         
-        # We verzamelen data van de NIEUWE pagina.
-        # Als Agent hier niet op staat, komt hij niet in form_data_step2.
-        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
+        # We bouwen formulier op basis van de NIEUWE pagina (waar Agent weg is)
+        form_data_step2 = verzamel_basis_form(soup_step1)
         
-        # DEBUG: Print alle keys die we gaan sturen
-        logging.info(f"Keys die we sturen in Stap 2: {list(form_data_step2.keys())}")
-
-        # Forceer Richting (Radio)
+        # Forceer 'Alle' waarden waar mogelijk
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
         
-        # Datums NOGMAALS leegmaken
+        # Forceer DATUMS naar LEEG (Cruciaal!)
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
+        # Schoonmaken event targets
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
+        
+        # Log wat we sturen (voor debug)
+        logging.info(f"Sending Step 2 keys: {list(form_data_step2.keys())}")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -448,7 +421,7 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 60 
+        max_pages = 50 # Ruimte voor 700+ items
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -471,17 +444,12 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Kopieer alleen filters die bestaan
-            # We gebruiken de keys uit form_data_step2, want die waren correct voor deze view
-            keys_to_keep = ['ctl00$ContentPlaceHolder1$ctl01$select$richting', 
-                            'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
-                            'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
-                            'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']
-            
-            for k in keys_to_keep:
-                if k in form_data_step2:
-                    page_form_data[k] = form_data_step2[k]
-
+            # Behoud filters
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
+            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
+            # Datums LEEG
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
@@ -493,7 +461,7 @@ def haal_bestellingen_op(session):
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
-            time.sleep(0.5) 
+            time.sleep(0.3) 
 
         logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
@@ -623,6 +591,17 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         except (ValueError, TypeError) as e:
             logging.warning(f"Fout bij verwerken schip: {e}")
             continue
+            
+    # --- NIEUW: LOG HET AANTAL GEFILTERDE SCHEPEN ---
+    aantal_inkomend = len(gefilterd.get("INKOMEND", []))
+    aantal_uitgaand = len(gefilterd.get("UITGAAND", []))
+    aantal_shifting = len(gefilterd.get("VERPLAATSING", []))
+    totaal_mpet = aantal_inkomend + aantal_uitgaand + aantal_shifting
+    
+    logging.info(f"FILTER RESULTAAT: Van de {len(bestellingen)} totaal gevonden schepen, zijn er {totaal_mpet} relevant voor MPET.")
+    logging.info(f"   - Inkomend: {aantal_inkomend}")
+    logging.info(f"   - Uitgaand: {aantal_uitgaand}")
+    logging.info(f"   - Shifting: {aantal_shifting}")
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     gefilterd["UITGAAND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
@@ -740,16 +719,6 @@ def main():
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu_brussels = datetime.now(brussels_tz) 
     snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session, nu_brussels)
-    
-    aantal_inkomend = len(snapshot_data.get("INKOMEND", []))
-    aantal_uitgaand = len(snapshot_data.get("UITGAAND", []))
-    aantal_shifting = len(snapshot_data.get("VERPLAATSING", []))
-    totaal_mpet = aantal_inkomend + aantal_uitgaand + aantal_shifting
-    
-    logging.info(f"FILTER RESULTAAT: Van de {len(nieuwe_bestellingen)} totaal gevonden schepen, zijn er {totaal_mpet} relevant voor MPET.")
-    logging.info(f"   - Inkomend: {aantal_inkomend}")
-    logging.info(f"   - Uitgaand: {aantal_uitgaand}")
-    logging.info(f"   - Shifting: {aantal_shifting}")
 
     new_snapshot_entry = Snapshot(timestamp=nu_brussels.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
     db.session.add(new_snapshot_entry)
