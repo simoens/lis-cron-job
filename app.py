@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v33, Dynamic + Force Date Clear) ---")
+    logging.info("--- Running haal_bestellingen_op (v34, Dynamic Type Lookup) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -340,7 +340,7 @@ def haal_bestellingen_op(session):
         soup_get = BeautifulSoup(get_response.content, 'lxml')
         
         # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup):
+        def verzamel_basis_form(soup, skip_all_dropdown_logic=False):
             data = {}
             for input_tag in soup.find_all('input'):
                 name = input_tag.get('name')
@@ -358,20 +358,28 @@ def haal_bestellingen_op(session):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                # Default: Pak huidige selectie.
-                # We overschrijven dit later met 'Alle' (no_value) waar nodig.
-                option = select_tag.find('option', selected=True) or select_tag.find('option')
-                if option: data[name] = option.get('value', '')
+                if skip_all_dropdown_logic:
+                    # Stap 1: Behoud
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
+                else:
+                    # Stap 2: Generiek
+                    option = select_tag.find('option', selected=True) or select_tag.find('option')
+                    if option: data[name] = option.get('value', '')
             return data
 
         # =================================================================
-        # STAP 1: ONTGRENDELING (VINKJE UIT)
+        # STAP 1: ONTGRENDELING
         # =================================================================
         logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get)
+        form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
         
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
+        
+        # Datums LEEG
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
@@ -379,37 +387,62 @@ def haal_bestellingen_op(session):
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
-        
-        # PAUZE voor de server
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: DE ECHTE ZOEKOPDRACHT (DATA LEEG, FILTERS ALLE)
+        # STAP 2: ZOEKEN (Met Dynamische Waarden)
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Datums wissen, Filters op Alle)...")
+        logging.info("STAP 2: ZOEKEN (Dynamische Lookup voor 'Alle')...")
         
-        # We bouwen formulier op basis van de NIEUWE pagina (waar Agent weg is)
-        form_data_step2 = verzamel_basis_form(soup_step1)
+        # Verzamelen (zonder Agent veld)
+        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Forceer 'Alle' waarden waar mogelijk
+        # Zorg dat Agent er echt uit is
+        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
+            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
+
+        # --- DYNAMISCH ZOEKEN NAAR 'ALLE' WAARDEN ---
+        # Havens (Van/Naar)
+        for dropdown in ['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van', 'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
+            # Default naar no_value
+            val = 'no_value'
+            select = soup_step1.find('select', {'name': dropdown})
+            if select:
+                for o in select.find_all('option'):
+                    if 'alle' in o.text.lower() or 'all' in o.text.lower():
+                        val = o.get('value', '')
+                        break
+            form_data_step2[dropdown] = val
+
+        # Type (Beloodsing) - DE KRITIEKE FIX
+        type_select = soup_step1.find('select', {'name': 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'})
+        type_val = '' # Fallback
+        if type_select:
+            options = type_select.find_all('option')
+            # Zoek naar 'Alle'
+            for o in options:
+                if 'alle' in o.text.lower() or 'all' in o.text.lower():
+                    type_val = o.get('value', '')
+                    logging.info(f"Gevonden 'Alle' waarde voor Type: '{type_val}'")
+                    break
+        
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = type_val
+        
+        # Forceer Richting
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
         
-        # Forceer DATUMS naar LEEG (Cruciaal!)
+        # Datums LEEG
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
-        # Schoonmaken event targets
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
-        # Log wat we sturen (voor debug)
-        logging.info(f"Sending Step 2 keys: {list(form_data_step2.keys())}")
+        # DEBUG LOG
+        logging.info(f"Step 2 Data (Type): {form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -421,7 +454,7 @@ def haal_bestellingen_op(session):
         logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
         
         current_page = 1
-        max_pages = 50 # Ruimte voor 700+ items
+        max_pages = 60 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -444,12 +477,15 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters
+            # Behoud filters (hergebruik de dynamisch gevonden waarden)
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = 'no_value'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
-            # Datums LEEG
+            
+            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van', 
+                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar',
+                      'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']:
+                if k in form_data_step2:
+                    page_form_data[k] = form_data_step2[k]
+
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
@@ -461,7 +497,7 @@ def haal_bestellingen_op(session):
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
-            time.sleep(0.3) 
+            time.sleep(0.5) 
 
         logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
