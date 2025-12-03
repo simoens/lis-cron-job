@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v41, Manual + Clear Date Fix) ---")
+    logging.info("--- Running haal_bestellingen_op (v42, Safe Wide Dates) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -349,7 +349,6 @@ def haal_bestellingen_op(session):
                 
                 # Checkbox 'betrokken' MOET WEG (Uncheck)
                 if 'select$betrokken' in name: continue 
-                # Radio buttons: Neem alles mee (wordt later overschreven)
                 if input_tag.get('type') == 'checkbox': continue
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
@@ -378,39 +377,42 @@ def haal_bestellingen_op(session):
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: ZOEKEN (MET DATUM LEEG + CORRECTE FILTERS)
+        # STAP 2: ZOEKEN (MET RUIME DATUM MARGE)
         # =================================================================
-        logging.info("STAP 2: Klik op ZOEKEN (Datums leeg, Richting=Alle)...")
+        logging.info("STAP 2: Klik op ZOEKEN (Datum -1 tot +30, Agent weg)...")
         
         form_data_step2 = verzamel_basis_form(soup_step1)
         
+        # AGENT WEGHALEN
+        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
+            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
+
         # Voeg knop toe
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
-        # 1. DATUMS LEEGMAKEN (Cruciaal voor 725 resultaten)
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        # DATUMS INVULLEN (Om crash te voorkomen, maar ruim genoeg)
+        # We pakken gisteren tot over 30 dagen, dat dekt praktisch alles wat openstaat
+        date_fmt = "%d/%m/%Y"
+        today = datetime.now()
+        yesterday = today - timedelta(days=1)
+        future = today + timedelta(days=30)
         
-        # 2. RICHTING FORCEER OP ALLE (/)
-        # Omdat radio buttons tricky zijn in verzamel_basis_form, zetten we hem hier hard.
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = yesterday.strftime(date_fmt)
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = future.strftime(date_fmt)
+        
+        # Richting = Alle
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
 
-        # Zorg dat we geen Event Targets meesturen
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
         
-        # DEBUG: Check of we nog ingelogd zijn
-        if "Inloggen" in response_step2.text:
-            logging.error("FOUT: Sessie verlopen of uitgelogd in Stap 2!")
-            return []
-        
-        # DEBUG: Check foutmeldingen in body
-        if len(parse_table_from_soup(current_soup)) == 0:
-            snippet = current_soup.get_text()[:300].replace('\n', ' ')
-            logging.info(f"DEBUG: 0 resultaten. Pagina snippet: {snippet}")
+        # Check op Foutmelding
+        if "LIS – Fout" in response_step2.text:
+             logging.error("CRITICAL: Server gaf 'LIS - Fout' melding.")
+             return []
 
         # ==========================================
         # STAP 3: PAGINERING
@@ -442,14 +444,10 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Filters kopiëren van stap 2
+            # Filters kopiëren
             for k, v in form_data_step2.items():
                 if k not in page_form_data and 'btnSearch' not in k:
                     page_form_data[k] = v
-            
-            # Datums expliciet leeg houden (anders komen ze misschien uit viewstate terug?)
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
