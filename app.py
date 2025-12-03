@@ -162,7 +162,7 @@ def logboek():
     for change in all_changes_query:
         if change.content:
             ship_names_found = ship_regex.findall(change.content)
-            for name in ship_names:
+            for name in ship_names_found:
                 unique_ships.add(name.strip()) 
     all_ships_sorted = sorted(list(unique_ships))
     query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v37, Safe Field Handling) ---")
+    logging.info("--- Running haal_bestellingen_op (v38, Minimal Intervention) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -353,44 +353,17 @@ def haal_bestellingen_op(session):
                 if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
                 data[name] = value
             
-            # Selects verzamelen
+            # Selects verzamelen - NU ALLEEN DEFAULT PAKKEN
             for select_tag in soup.find_all('select'):
                 name = select_tag.get('name')
                 if not name: continue
                 
-                if skip_all_dropdown_logic:
-                    # Stap 1: Behoud
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
-                else:
-                    # Stap 2: Zoek 'Alle'
-                    options = select_tag.find_all('option')
-                    
-                    val_to_use = None
-                    
-                    # 1. Zoek op tekst 'Alle'
-                    for o in options:
-                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
-                            val_to_use = o.get('value', '')
-                            break
-                    
-                    # 2. Zoek op value 'no_value'
-                    if val_to_use is None:
-                        for o in options:
-                            if o.get('value') == 'no_value':
-                                val_to_use = 'no_value'
-                                break
-                    
-                    # 3. Fallback voor Type (Beloodsing):
-                    #    v35 logs lieten zien dat 'Alle' = '/'
-                    if val_to_use is None:
-                        if 'filter_bld' in name:
-                             val_to_use = '/' 
-                        else:
-                             if options: val_to_use = options[0].get('value', '')
-
-                    data[name] = val_to_use if val_to_use is not None else ''
-
+                # Als we in Stap 2 zitten en Agent staat er nog in, filteren we hem later.
+                # Maar voor nu pakken we gewoon braaf de selected value.
+                option = select_tag.find('option', selected=True) or select_tag.find('option')
+                if option: data[name] = option.get('value', '')
+                else: data[name] = '' # Fallback
+                
             return data
 
         # =================================================================
@@ -402,10 +375,12 @@ def haal_bestellingen_op(session):
         form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         form_data_step1['__EVENTARGUMENT'] = ''
         
-        # Datums LEEG
+        # We veranderen verder NIKS. We laten de datums zoals ze zijn, want in v36/v35
+        # was het probleem mogelijk dat we datums in Stap 1 al leegmaakten?
+        # Nee, wacht. De gebruiker zegt: "Datums moeten leeg zijn".
+        # Laten we ze in Stap 1 leegmaken zodat de server meteen snapt wat we willen.
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
         
         response_step1 = session.post(base_page_url, data=form_data_step1)
         response_step1.raise_for_status()
@@ -416,26 +391,27 @@ def haal_bestellingen_op(session):
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: DE ECHTE ZOEKOPDRACHT
+        # STAP 2: DE ECHTE ZOEKOPDRACHT (Minimal Touch)
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Veilige modus)...")
+        logging.info("STAP 2: ZOEKEN (Alleen noodzakelijke wijzigingen)...")
         
-        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
+        form_data_step2 = verzamel_basis_form(soup_step1)
         
-        # DEBUG: Check of Agent nog bestaat
+        # 1. AGENT WEGHALEN (Indien aanwezig)
         if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
-            logging.info("Agent veld GEVONDEN in HTML, zetten op 'no_value'")
-            form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam'] = 'no_value'
-        else:
-            logging.info("Agent veld NIET GEVONDEN in HTML (correct, want eigen reizen is uit).")
+            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
 
-        # Forceer Richting
+        # 2. RICHTING FORCEER OP '/'
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
-        # Datums LEEG (Key behouden, waarde leeg)
+        # 3. DATUMS LEEG
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
+        # 4. DROPDOWNS: WE DOEN NIKS!
+        # We vertrouwen erop dat de server na Stap 1 de dropdowns (zoals Type) gereset heeft naar default.
+        # We overschrijven Type/Havens dus NIET handmatig.
+
         # Druk op knop
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         
@@ -480,15 +456,17 @@ def haal_bestellingen_op(session):
             
             # Behoud filters
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            # Kopieer Type en Havens
-            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld',
-                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van',
-                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
-                if k in form_data_step2:
-                    page_form_data[k] = form_data_step2[k]
-            
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+            
+            # Ook Type meesturen als we het in stap 2 hadden
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld' in form_data_step2:
+                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']
+            # Zelfde voor havens
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van' in form_data_step2:
+                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van']
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar' in form_data_step2:
+                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
