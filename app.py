@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v34, Dynamic Type Lookup) ---")
+    logging.info("--- Running haal_bestellingen_op (v35, Combined Fix + Type Debug) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -363,9 +363,38 @@ def haal_bestellingen_op(session):
                     option = select_tag.find('option', selected=True) or select_tag.find('option')
                     if option: data[name] = option.get('value', '')
                 else:
-                    # Stap 2: Generiek
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
+                    # Stap 2: Zoek 'Alle'
+                    options = select_tag.find_all('option')
+                    
+                    # DEBUG: Log Type opties voor de zekerheid
+                    if 'filter_bld' in name:
+                        debug_list = [f"'{o.text}'='{o.get('value')}'" for o in options]
+                        logging.info(f"DEBUG TYPE DROPDOWN: {debug_list}")
+                    
+                    val_to_use = None
+                    
+                    # 1. Zoek op tekst 'Alle'
+                    for o in options:
+                        if 'alle' in o.text.lower() or 'all' in o.text.lower():
+                            val_to_use = o.get('value', '')
+                            break
+                    
+                    # 2. Zoek op value 'no_value'
+                    if val_to_use is None:
+                        for o in options:
+                            if o.get('value') == 'no_value':
+                                val_to_use = 'no_value'
+                                break
+                    
+                    # 3. Fallback: Als 'filter_bld' geen 'Alle' heeft, pak dan LEEG.
+                    if val_to_use is None:
+                        if 'filter_bld' in name:
+                             val_to_use = '' # Forceer leeg
+                        else:
+                             if options: val_to_use = options[0].get('value', '')
+
+                    data[name] = val_to_use if val_to_use is not None else ''
+
             return data
 
         # =================================================================
@@ -387,51 +416,24 @@ def haal_bestellingen_op(session):
         soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
         
         logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
+        
         time.sleep(3)
         
         # =================================================================
-        # STAP 2: ZOEKEN (Met Dynamische Waarden)
+        # STAP 2: DE ECHTE ZOEKOPDRACHT
         # =================================================================
-        logging.info("STAP 2: ZOEKEN (Dynamische Lookup voor 'Alle')...")
+        logging.info("STAP 2: ZOEKEN (Agent weg, Type leeg, Datums leeg)...")
         
-        # Verzamelen (zonder Agent veld)
         form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
         
-        # Zorg dat Agent er echt uit is
+        # AGENT WEGHALEN (Cruciaal voor v30 fix)
         if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
             del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
 
-        # --- DYNAMISCH ZOEKEN NAAR 'ALLE' WAARDEN ---
-        # Havens (Van/Naar)
-        for dropdown in ['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van', 'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar']:
-            # Default naar no_value
-            val = 'no_value'
-            select = soup_step1.find('select', {'name': dropdown})
-            if select:
-                for o in select.find_all('option'):
-                    if 'alle' in o.text.lower() or 'all' in o.text.lower():
-                        val = o.get('value', '')
-                        break
-            form_data_step2[dropdown] = val
-
-        # Type (Beloodsing) - DE KRITIEKE FIX
-        type_select = soup_step1.find('select', {'name': 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'})
-        type_val = '' # Fallback
-        if type_select:
-            options = type_select.find_all('option')
-            # Zoek naar 'Alle'
-            for o in options:
-                if 'alle' in o.text.lower() or 'all' in o.text.lower():
-                    type_val = o.get('value', '')
-                    logging.info(f"Gevonden 'Alle' waarde voor Type: '{type_val}'")
-                    break
-        
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = type_val
-        
         # Forceer Richting
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         
-        # Datums LEEG
+        # Datums NOGMAALS leegmaken
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         
@@ -441,8 +443,8 @@ def haal_bestellingen_op(session):
         if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
         if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
         
-        # DEBUG LOG
-        logging.info(f"Step 2 Data (Type): {form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}")
+        # DEBUG LOG WAT WE STUREN
+        logging.info(f"Sending Type: '{form_data_step2.get('ctl00$ContentPlaceHolder1$ctl01$select$filter_bld')}'")
         
         response_step2 = session.post(base_page_url, data=form_data_step2)
         current_soup = BeautifulSoup(response_step2.content, 'lxml')
@@ -477,17 +479,14 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters (hergebruik de dynamisch gevonden waarden)
+            # Behoud filters
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            
-            for k in ['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van', 
-                      'ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar',
-                      'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']:
-                if k in form_data_step2:
-                    page_form_data[k] = form_data_step2[k]
-
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
             page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+            
+            # Ook Type meesturen zoals in stap 2
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$filter_bld' in form_data_step2:
+                page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld']
 
             page_response = session.post(base_page_url, data=page_form_data)
             current_soup = BeautifulSoup(page_response.content, 'lxml')
