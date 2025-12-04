@@ -342,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v53, Fix PTA Priority & Regex) ---")
+    logging.info("--- Running haal_bestellingen_op (v54, Reisplan Column Fix & Debug) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,56 +389,65 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN ---
+# --- FUNCTIE OM REISPLAN TE LEZEN (COLUMN BASED) ---
 def haal_reisplan_details(session, reis_id):
-    """Leest de detailpagina en geeft een dictionary terug met tijden per locatie."""
-    if not reis_id: return {}
+    """Leest de detailpagina, zoekt de juiste kolom en pakt de onderste waarde."""
+    if not reis_id: return None
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
         response = session.get(url, timeout=10)
         soup = BeautifulSoup(response.content, 'lxml')
         
-        details = {}
         tabel = None
         for t in soup.find_all('table'):
             if "Besteltijd" in t.get_text():
                 tabel = t
                 break
         
-        if not tabel: return {}
+        if not tabel: return None
 
         rows = tabel.find_all('tr')
-        if not rows: return {}
+        if not rows: return None
         
-        locaties = []
-        header_cells = rows[0].find_all(['td', 'th']) 
+        # Vind de index van onze doelkolommen
+        target_index = -1
+        target_name = ""
         
+        header_cells = rows[0].find_all(['td', 'th'])
+        
+        # Zoek naar Saeftinghe-Zandvliet OF Deurganckdok
         for i, cell in enumerate(header_cells):
             txt = cell.get_text(strip=True)
-            if i == 0: continue
-            locaties.append(txt)
+            if "Saeftinghe" in txt and "Zandvliet" in txt:
+                target_index = i
+                target_name = txt
+                break
+            elif "Deurganckdok" in txt and target_index == -1: # Fallback als Saeftinghe er niet is
+                 target_index = i
+                 target_name = txt
 
+        if target_index == -1:
+             return None
+
+        # Nu itereren we de rijen en updaten 'latest_value' telkens als we iets vinden in die kolom
+        latest_value = None
+        
         for row in rows[1:]:
             cells = row.find_all('td')
-            if not cells: continue
-            
-            rij_label = cells[0].get_text(strip=True).replace(':', '') 
-            if not rij_label: continue
-            
-            for i, cell in enumerate(cells[1:]):
-                if i < len(locaties):
-                    locatie_naam = locaties[i]
-                    tijd_waarde = cell.get_text(strip=True)
-                    if tijd_waarde:
-                        if locatie_naam not in details: details[locatie_naam] = {}
-                        # Sla alle types op (PTA, GTA, ATA)
-                        details[locatie_naam][rij_label] = tijd_waarde
+            if len(cells) > target_index:
+                val = cells[target_index].get_text(strip=True)
+                if val:
+                    latest_value = val
+        
+        # Debug log voor verificatie
+        if latest_value:
+            logging.info(f"DEBUG REISPLAN: Schip ID {reis_id} - Gevonden in kolom '{target_name}': {latest_value}")
 
-        return details
+        return latest_value
 
     except Exception as e:
         logging.error(f"Error in haal_reisplan_details voor {reis_id}: {e}")
-        return {}
+        return None
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
@@ -518,30 +527,18 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     b['berekende_eta'] = 'N/A'
 
-                    # STAP 1: REISPLAN (HOOGSTE PRIORITEIT)
-                    details = haal_reisplan_details(session, b.get('ReisId'))
-                    target_locs = [k for k in details.keys() if 'Zandvliet' in k or 'Saeftinghe' in k]
-                    if not target_locs: target_locs = [k for k in details.keys() if 'Deurganckdok' in k]
+                    # STAP 1: REISPLAN (ONDERSTE WAARDE IN KOLOM)
+                    raw_reisplan_tijd = haal_reisplan_details(session, b.get('ReisId'))
                     
-                    if target_locs:
-                        loc = target_locs[0]
-                        tijden = details[loc]
-                        # Logic: Prefer ATA > PTA > GTA.
-                        raw_tijd = None
-                        if 'ATA' in tijden: raw_tijd = tijden['ATA']
-                        elif 'PTA' in tijden: raw_tijd = tijden['PTA']
-                        elif 'GTA' in tijden: raw_tijd = tijden['GTA']
-                        
-                        if raw_tijd:
-                            # Schoonmaken van labels
-                            clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
-                            b['berekende_eta'] = clean_tijd
+                    if raw_reisplan_tijd:
+                        # Schoonmaken (verwijder PTA/GTA/ATA labels)
+                        clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_reisplan_tijd).strip()
+                        b['berekende_eta'] = clean_tijd
 
                     # STAP 2: RTA KOLOM (FALLBACK)
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
-                            # Verbeterde Regex: Zoek SA/ZV + Tijd, negeer de rest
                             match = re.search(r"SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                             if match:
                                     b['berekende_eta'] = f"CP: {match.group(1)}"
