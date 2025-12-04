@@ -342,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v52, RTA Priority Flip) ---")
+    logging.info("--- Running haal_bestellingen_op (v53, Fix PTA Priority & Regex) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,7 +389,7 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN (ONDERSTE WAARDE) ---
+# --- FUNCTIE OM REISPLAN TE LEZEN ---
 def haal_reisplan_details(session, reis_id):
     """Leest de detailpagina en geeft een dictionary terug met tijden per locatie."""
     if not reis_id: return {}
@@ -431,6 +431,7 @@ def haal_reisplan_details(session, reis_id):
                     tijd_waarde = cell.get_text(strip=True)
                     if tijd_waarde:
                         if locatie_naam not in details: details[locatie_naam] = {}
+                        # Sla alle types op (PTA, GTA, ATA)
                         details[locatie_naam][rij_label] = tijd_waarde
 
         return details
@@ -517,7 +518,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     b['berekende_eta'] = 'N/A'
 
-                    # STAP 1: REISPLAN (Hogere Prioriteit)
+                    # STAP 1: REISPLAN (HOOGSTE PRIORITEIT)
                     details = haal_reisplan_details(session, b.get('ReisId'))
                     target_locs = [k for k in details.keys() if 'Zandvliet' in k or 'Saeftinghe' in k]
                     if not target_locs: target_locs = [k for k in details.keys() if 'Deurganckdok' in k]
@@ -525,22 +526,29 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     if target_locs:
                         loc = target_locs[0]
                         tijden = details[loc]
-                        if tijden:
-                            raw_tijd = list(tijden.values())[-1] # Onderste waarde
+                        # Logic: Prefer ATA > PTA > GTA.
+                        raw_tijd = None
+                        if 'ATA' in tijden: raw_tijd = tijden['ATA']
+                        elif 'PTA' in tijden: raw_tijd = tijden['PTA']
+                        elif 'GTA' in tijden: raw_tijd = tijden['GTA']
+                        
+                        if raw_tijd:
+                            # Schoonmaken van labels
                             clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
                             b['berekende_eta'] = clean_tijd
 
-                    # STAP 2: RTA KOLOM (Fallback)
+                    # STAP 2: RTA KOLOM (FALLBACK)
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
-                            match = re.search(r"GTA:\s*SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
+                            # Verbeterde Regex: Zoek SA/ZV + Tijd, negeer de rest
+                            match = re.search(r"SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                             if match:
                                     b['berekende_eta'] = f"CP: {match.group(1)}"
                             else:
                                     b['berekende_eta'] = rta_waarde
 
-                    # STAP 3: BEREKENING (Laatste redmiddel)
+                    # STAP 3: BEREKENING (LAATSTE REDMIDDEL)
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         eta_dt = None
                         if besteltijd_aware: 
