@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- NIEUW: PARSE TABEL HELPER ---
+# --- NIEUW: PARSE TABEL HELPER MET RTA FIX ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -317,9 +317,22 @@ def parse_table_from_soup(soup):
         bestelling = {}
         for k, i in kolom_indices.items():
             if i < len(kolom_data):
-                value = kolom_data[i].get_text(strip=True)
+                cell = kolom_data[i]
+                value = cell.get_text(strip=True)
+                
+                # RTA FIX: Als tekst leeg is, zoek naar 'title' attribuut (hover tekst)
+                if k == "RTA" and not value:
+                    if cell.has_attr('title'):
+                        value = cell['title']
+                    else:
+                        # Soms zit het in een child element (span, div, img)
+                        child_with_title = cell.find(lambda tag: tag.has_attr('title'))
+                        if child_with_title:
+                            value = child_with_title['title']
+
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
+                
         if 11 < len(kolom_data):
             schip_cel = kolom_data[11]
             link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx\?ReisId='))
@@ -330,38 +343,96 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v46, Simple Default View - MSC Only) ---")
+    logging.info("--- Running haal_bestellingen_op (v48, RTA Priority + Manual Emulation) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        session.headers.update({'Referer': base_page_url})
         
-        # Gewoon de pagina ophalen. De default view is met 'Eigen reizen' AAN (dus alleen MSC).
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
-        soup = BeautifulSoup(get_response.content, 'lxml')
+        soup_get = BeautifulSoup(get_response.content, 'lxml')
         
-        alle_bestellingen = parse_table_from_soup(soup)
+        # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
+        def verzamel_basis_form(soup):
+            data = {}
+            # Inputs
+            for input_tag in soup.find_all('input'):
+                name = input_tag.get('name')
+                value = input_tag.get('value', '')
+                if not name: continue
+                # Checkbox 'betrokken' (Eigen reizen) ALTIJD eruit halen
+                if 'select$betrokken' in name: continue 
+                if input_tag.get('type') == 'checkbox': continue
+                if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
+                data[name] = value
+            
+            # Selects (PAK GEWOON WAT ER STAAT)
+            for select_tag in soup.find_all('select'):
+                name = select_tag.get('name')
+                if not name: continue
+                option = select_tag.find('option', selected=True) or select_tag.find('option')
+                if option: data[name] = option.get('value', '')
+            return data
+
+        # =================================================================
+        # STAP 1: KLIK OP VINKJE (Eigen Reizen UIT)
+        # =================================================================
+        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
+        form_data_step1 = verzamel_basis_form(soup_get)
         
-        # Paginering afhandelen (voor het geval MSC veel schepen heeft)
+        # Trigger de checkbox change event
+        form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
+        form_data_step1['__EVENTARGUMENT'] = ''
+        
+        response_step1 = session.post(base_page_url, data=form_data_step1)
+        response_step1.raise_for_status()
+        soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
+        
+        logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
+        
+        # WACHT (Zoals je manueel ook doet)
+        time.sleep(3)
+        
+        # =================================================================
+        # STAP 2: KLIK OP ZOEKEN (Zonder iets te veranderen!)
+        # =================================================================
+        logging.info("STAP 2: Klik op ZOEKEN (Met formulier zoals ontvangen)...")
+        
+        # We pakken de state precies zoals de server hem teruggaf in Stap 1
+        form_data_step2 = verzamel_basis_form(soup_step1)
+        
+        # We voegen ALLEEN de knop toe
+        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        
+        # Zorg dat we geen Event Targets meesturen van de vorige stap
+        if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
+        if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
+        
+        response_step2 = session.post(base_page_url, data=form_data_step2)
+        current_soup = BeautifulSoup(response_step2.content, 'lxml')
+        
+        # ==========================================
+        # STAP 3: PAGINERING
+        # ==========================================
+        alle_bestellingen = parse_table_from_soup(current_soup)
+        logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
+        
         current_page = 1
-        max_pages = 10 # MSC heeft er waarschijnlijk niet meer dan dit actief
+        max_pages = 60 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
-            # Zoek link naar volgende pagina (Page$2, Page$3 etc)
-            paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
+            paging_link = current_soup.find('a', href=re.compile(f"Page\${next_page_num}"))
             
-            if not paging_link:
-                break
-                
+            if not paging_link: break
+            
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
             
-            # Voor ASP.NET paging moeten we de __EVENTTARGET en __VIEWSTATE meesturen
             page_form_data = {}
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
-                tag = soup.find('input', {'name': hidden})
+                tag = current_soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
             
-            # Haal target uit de link: javascript:__doPostBack('ctl00$Content...','Page$2')
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
@@ -370,18 +441,22 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # POST request voor de volgende pagina
+            # Behoud filters (Kopieer alles van stap 2 behalve knop)
+            for k, v in form_data_step2.items():
+                if k not in page_form_data and 'btnSearch' not in k:
+                    page_form_data[k] = v
+
             page_response = session.post(base_page_url, data=page_form_data)
-            soup = BeautifulSoup(page_response.content, 'lxml')
+            current_soup = BeautifulSoup(page_response.content, 'lxml')
             
-            new_items = parse_table_from_soup(soup)
+            new_items = parse_table_from_soup(current_soup)
             if not new_items: break
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
             time.sleep(0.5) 
 
-        logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
+        logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
         return alle_bestellingen
 
     except Exception as e:
@@ -491,14 +566,22 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if is_sluisplanning: show_ship = True
                 elif besteltijd_aware and (grens_in_verleden <= besteltijd_aware <= grens_in_toekomst): show_ship = True
                 if show_ship:
-                    pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
-                    b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
-                    if b['berekende_eta'] == 'N/A':
-                        eta_dt = None
-                        if besteltijd_aware: 
-                            if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
-                            elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
-                            if eta_dt: b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                    # EERST: Probeer RTA (uit de tabel, inclusief hover)
+                    rta_waarde = b.get('RTA', '').strip()
+                    
+                    if rta_waarde:
+                        b['berekende_eta'] = rta_waarde
+                    else:
+                        # FALLBACK: Oude methode (Reisplan scrapen of berekenen)
+                        pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
+                        b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
+                        if b['berekende_eta'] == 'N/A':
+                            eta_dt = None
+                            if besteltijd_aware: 
+                                if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
+                                elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
+                                if eta_dt: b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                    
                     gefilterd["INKOMEND"].append(b)
             
             elif schip_type == "V": 
