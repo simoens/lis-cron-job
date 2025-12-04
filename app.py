@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- AANGEPAST: PARSE TABEL HELPER MET SLIMME ID FINDER (v60) ---
+# --- PARSE TABEL HELPER MET HERSTELDE ID FINDER ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -330,7 +330,7 @@ def parse_table_from_soup(soup):
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
 
-        # 2. REIS ID ZOEKEN (LINK OF ONCLICK)
+        # 2. REIS ID ZOEKEN (HERSTELD!)
         # Optie A: Link
         link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
         if link_tag:
@@ -338,9 +338,9 @@ def parse_table_from_soup(soup):
             if match: bestelling['ReisId'] = match.group(1)
         
         # Optie B: Onclick rij (voor als link ontbreekt)
+        # Dit was het stukje dat miste in v61 en v58
         if 'ReisId' not in bestelling and row.has_attr('onclick'):
             onclick_text = row['onclick']
-            # Zoek naar value=12345...
             match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
             if match:
                 bestelling['ReisId'] = match.group(1)
@@ -349,9 +349,11 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v61, Detail Debugger) ---")
+    logging.info("--- Running haal_bestellingen_op (v62, ID Fix + Detail Debug) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        
+        # Gewoon de pagina ophalen.
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
@@ -423,11 +425,9 @@ def haal_reisplan_details(session, reis_id):
             clean_txt = txt.lower().replace('\xa0', ' ').replace('\n', ' ')
             if "saeftinghe" in clean_txt or "zandvliet" in clean_txt:
                 target_index = i
-                logging.info(f"DEBUG REISPLAN - Saeftinghe gevonden op index {i}")
                 break
             elif "deurganckdok" in clean_txt and target_index == -1:
                  target_index = i
-                 logging.info(f"DEBUG REISPLAN - Deurganckdok gevonden op index {i}")
 
         if target_index == -1: 
             logging.warning(f"DEBUG REISPLAN - Geen geschikte kolom gevonden!")
