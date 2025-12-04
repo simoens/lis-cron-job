@@ -346,18 +346,21 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v66, Bewegingen + MPET filter) ---")
+    logging.info("--- Running haal_bestellingen_op (v67, Source Indicator Added) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        
+        # Gewoon de pagina ophalen.
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
         
         alle_bestellingen = parse_table_from_soup(soup)
         
-        # Paginering
+        # Paginering afhandelen
         current_page = 1
         max_pages = 10 
+        
         while current_page < max_pages:
             next_page_num = current_page + 1
             paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
@@ -367,12 +370,14 @@ def haal_bestellingen_op(session):
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
+            
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else: break
+            
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
             new_items = parse_table_from_soup(soup)
@@ -383,6 +388,7 @@ def haal_bestellingen_op(session):
 
         logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
+
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
@@ -514,7 +520,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                         # Haal tijd uit bewegingen
                         tijd_uit_bewegingen = haal_bewegingen_details(session, reis_id)
                         if tijd_uit_bewegingen:
-                             b['berekende_eta'] = tijd_uit_bewegingen
+                             b['berekende_eta'] = f"Bewegingen: {tijd_uit_bewegingen}"
                     
                     # STAP 2: FALLBACK NAAR RTA KOLOM
                     if b['berekende_eta'] == 'N/A':
@@ -522,11 +528,11 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                         if rta_waarde:
                             match = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde, re.IGNORECASE)
                             if match:
-                                    b['berekende_eta'] = f"CP: {match.group(2)}"
+                                    b['berekende_eta'] = f"RTA (CP): {match.group(2)}"
                             else:
                                     match_gen = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
-                                    if match_gen: b['berekende_eta'] = match_gen.group(1)
-                                    else: b['berekende_eta'] = rta_waarde
+                                    if match_gen: b['berekende_eta'] = f"RTA: {match_gen.group(1)}"
+                                    else: b['berekende_eta'] = f"RTA: {rta_waarde}"
 
                     # STAP 3: FALLBACK NAAR BEREKENING
                     if b['berekende_eta'] == 'N/A':
@@ -534,7 +540,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                         if besteltijd_aware: 
                             if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
                             elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
-                            if eta_dt: b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                            if eta_dt: b['berekende_eta'] = f"Calculated: {eta_dt.strftime('%d/%m/%y %H:%M')}"
                     
                     gefilterd["INKOMEND"].append(b)
             
