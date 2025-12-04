@@ -349,21 +349,18 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v60, OnClick ID Extraction) ---")
+    logging.info("--- Running haal_bestellingen_op (v61, Detail Debugger) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        
-        # Gewoon de pagina ophalen.
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
         
         alle_bestellingen = parse_table_from_soup(soup)
         
-        # Paginering afhandelen
+        # Paginering
         current_page = 1
         max_pages = 10 
-        
         while current_page < max_pages:
             next_page_num = current_page + 1
             paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
@@ -373,14 +370,12 @@ def haal_bestellingen_op(session):
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
-            
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else: break
-            
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
             new_items = parse_table_from_soup(soup)
@@ -391,14 +386,13 @@ def haal_bestellingen_op(session):
 
         logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
-
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN ---
+# --- AANGEPASTE FUNCTIE MET HEAVY DEBUGGING ---
 def haal_reisplan_details(session, reis_id):
-    """Scant de cellen op inhoud (Text OF Input Value)."""
+    """Scant de cellen op inhoud (Text OF Input Value) en LOGT alles."""
     if not reis_id: return {}
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
@@ -418,21 +412,29 @@ def haal_reisplan_details(session, reis_id):
         rows = tabel.find_all('tr')
         if not rows: return {}
         
+        # LOG DE HEADERS
+        header_cells = rows[0].find_all(['td', 'th'])
+        headers_text = [c.get_text(strip=True) for c in header_cells]
+        logging.info(f"DEBUG REISPLAN (ID {reis_id}) - Kolommen: {headers_text}")
+        
         # Vind kolom index
         target_index = -1
-        header_cells = rows[0].find_all(['td', 'th'])
-        for i, cell in enumerate(header_cells):
-            txt = cell.get_text(strip=True)
-            if "Saeftinghe" in txt and "Zandvliet" in txt:
+        for i, txt in enumerate(headers_text):
+            clean_txt = txt.lower().replace('\xa0', ' ').replace('\n', ' ')
+            if "saeftinghe" in clean_txt or "zandvliet" in clean_txt:
                 target_index = i
+                logging.info(f"DEBUG REISPLAN - Saeftinghe gevonden op index {i}")
                 break
-            elif "Deurganckdok" in txt and target_index == -1:
+            elif "deurganckdok" in clean_txt and target_index == -1:
                  target_index = i
+                 logging.info(f"DEBUG REISPLAN - Deurganckdok gevonden op index {i}")
 
-        if target_index == -1: return {}
+        if target_index == -1: 
+            logging.warning(f"DEBUG REISPLAN - Geen geschikte kolom gevonden!")
+            return {}
 
         # Scan alle rijen
-        for row in rows[1:]:
+        for idx, row in enumerate(rows[1:]):
             cells = row.find_all('td')
             if len(cells) > target_index:
                 cell = cells[target_index]
@@ -449,6 +451,7 @@ def haal_reisplan_details(session, reis_id):
                 full_text = f"{label_text} {input_val}".strip()
                 
                 if full_text:
+                    logging.info(f"DEBUG REISPLAN - Rij {idx+1}: Gevonden '{full_text}'")
                     if "ATA" in full_text: found_times['ATA'].append(full_text)
                     elif "PTA" in full_text: found_times['PTA'].append(full_text)
                     elif "GTA" in full_text: found_times['GTA'].append(full_text)
@@ -539,10 +542,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 
                     # STAP 0: Check of we een ID hebben
                     reis_id = b.get('ReisId')
-                    if not reis_id:
-                         logging.warning(f"WARNING: Geen ReisId gevonden voor schip {b.get('Schip')}")
-                    else:
-                        # STAP 1: REISPLAN
+                    if reis_id:
+                        # STAP 1: REISPLAN + DEBUG
                         tijden_dict = haal_reisplan_details(session, reis_id)
                         raw_tijd = None
                         
@@ -558,12 +559,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
-                            # Verbeterde regex: SA/ZV gevolgd door tijd, kap rest af
                             match = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde, re.IGNORECASE)
                             if match:
                                     b['berekende_eta'] = f"CP: {match.group(2)}"
                             else:
-                                    # Fallback: zoek gewoon naar een tijdspatroon
                                     match_gen = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                                     if match_gen: b['berekende_eta'] = match_gen.group(1)
                                     else: b['berekende_eta'] = rta_waarde
