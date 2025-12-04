@@ -331,27 +331,24 @@ def parse_table_from_soup(soup):
                 bestelling[k] = value
 
         # 2. REIS ID ZOEKEN
-        # A: Link
         link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
         if link_tag:
             match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
             if match: bestelling['ReisId'] = match.group(1)
         
-        # B: Onclick
         if 'ReisId' not in bestelling and row.has_attr('onclick'):
             onclick_text = row['onclick']
             match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
             if match:
                 bestelling['ReisId'] = match.group(1)
-        
+
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v63, Loud Debugging) ---")
+    logging.info("--- Running haal_bestellingen_op (v66, Bewegingen + MPET filter) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
@@ -361,7 +358,6 @@ def haal_bestellingen_op(session):
         # Paginering
         current_page = 1
         max_pages = 10 
-        
         while current_page < max_pages:
             next_page_num = current_page + 1
             paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
@@ -371,14 +367,12 @@ def haal_bestellingen_op(session):
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
-            
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else: break
-            
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
             new_items = parse_table_from_soup(soup)
@@ -393,81 +387,48 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- AANGEPASTE FUNCTIE MET EXTRA LOGGING VOOR DIAGNOSE ---
-def haal_reisplan_details(session, reis_id):
-    """Haalt details op en logt ELKE STAP."""
-    if not reis_id: return {}
-    logging.info(f"DEBUG: Start ophalen details voor ReisId {reis_id}...")
-    
+# --- NIEUWE FUNCTIE: HAAL BEWEGINGEN DETAILS ---
+def haal_bewegingen_details(session, reis_id):
+    """Haalt ETA/ATA op van de Bewegingen pagina voor MPET/Deurganckdok."""
+    if not reis_id: return None
     try:
-        url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
+        url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
         response = session.get(url, timeout=10)
-        logging.info(f"DEBUG: Pagina binnen voor {reis_id}. Status: {response.status_code}. Lengte: {len(response.content)} bytes.")
-        
         soup = BeautifulSoup(response.content, 'lxml')
         
-        found_times = {'ATA': [], 'PTA': [], 'GTA': []}
+        table = soup.find('table', id='ctl00_ContentPlaceHolder1_gridMovements')
+        if not table: return None
         
-        tabel = None
-        for t in soup.find_all('table'):
-            if "Besteltijd" in t.get_text():
-                tabel = t
-                logging.info(f"DEBUG: Tabel 'Besteltijd' gevonden voor {reis_id}!")
-                break
+        target_time = None
         
-        if not tabel: 
-            logging.warning(f"DEBUG: GEEN tabel met 'Besteltijd' gevonden voor {reis_id}. Dump: {soup.get_text()[:100]}...")
-            return {}
-
-        rows = tabel.find_all('tr')
-        if not rows: return {}
-        
-        # LOG DE HEADERS
-        header_cells = rows[0].find_all(['td', 'th'])
-        headers_text = [c.get_text(strip=True) for c in header_cells]
-        # logging.info(f"DEBUG Kolommen {reis_id}: {headers_text}")
-        
-        # Vind kolom index
-        target_index = -1
-        for i, txt in enumerate(headers_text):
-            clean_txt = txt.lower().replace('\xa0', ' ').replace('\n', ' ')
-            if "saeftinghe" in clean_txt or "zandvliet" in clean_txt:
-                target_index = i
-                break
-            elif "deurganckdok" in clean_txt and target_index == -1:
-                 target_index = i
-
-        if target_index == -1: 
-            logging.warning(f"DEBUG: Geen relevante kolom gevonden voor {reis_id}!")
-            return {}
-
-        # Scan alle rijen
-        for idx, row in enumerate(rows[1:]):
+        # Kolommen: Locatie(0), ETA(1), RTA(2), ATA(3), Type(4)
+        for row in table.find_all('tr')[1:]:
             cells = row.find_all('td')
-            if len(cells) > target_index:
-                cell = cells[target_index]
+            if len(cells) < 4: continue
+            
+            locatie = cells[0].get_text(strip=True)
+            eta = cells[1].get_text(strip=True)
+            ata = cells[3].get_text(strip=True)
+            
+            # Zoek naar MPET of Deurganckdok
+            if "Deurganckdok" in locatie or "MPET" in locatie:
+                # Prio: ATA (Werkelijk) > ETA (Verwacht)
+                if ata: target_time = ata
+                elif eta: target_time = eta
                 
-                # 1. Probeer tekst
-                label_text = cell.get_text(strip=True)
-                
-                # 2. Probeer Input Value
-                input_val = ""
-                inp = cell.find('input')
-                if inp and inp.get('value'):
-                    input_val = inp.get('value').strip()
-                
-                full_text = f"{label_text} {input_val}".strip()
-                
-                if full_text:
-                    if "ATA" in full_text: found_times['ATA'].append(full_text)
-                    elif "PTA" in full_text: found_times['PTA'].append(full_text)
-                    elif "GTA" in full_text: found_times['GTA'].append(full_text)
-
-        return found_times
+        # Schoonmaken: verwijder jaartal en seconden indien mogelijk voor clean view
+        # Vb: "04/12/2025 15:40" -> "04/12 15:40"
+        if target_time:
+             # Regex om dd/mm/yyyy HH:MM om te zetten naar dd/mm HH:MM
+             match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
+             if match:
+                 target_time = f"{match.group(1)} {match.group(2)}"
+        
+        return target_time
 
     except Exception as e:
-        logging.error(f"Error in haal_reisplan_details voor {reis_id}: {e}")
-        return {}
+        logging.error(f"Fout bij ophalen bewegingen voor {reis_id}: {e}")
+        return None
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
@@ -545,32 +506,18 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if is_sluisplanning: show_ship = True
                 elif besteltijd_aware and (grens_in_verleden <= besteltijd_aware <= grens_in_toekomst): show_ship = True
                 if show_ship:
-                    b['berekende_eta'] = 'N/A'
-
-                    # STAP 0: Check of we een ID hebben (DEBUG toegevoegd)
+                    # STAP 1: BEWEGINGEN PAGINA CHECKEN
                     reis_id = b.get('ReisId')
+                    b['berekende_eta'] = 'N/A'
+                    
                     if reis_id:
-                        logging.info(f"DEBUG: Gevonden ID {reis_id} voor {b.get('Schip')}. Start detail scan...")
-                        
-                        # STAP 1: REISPLAN + DEBUG
-                        tijden_dict = haal_reisplan_details(session, reis_id)
-                        raw_tijd = None
-                        
-                        if tijden_dict.get('ATA'): raw_tijd = tijden_dict['ATA'][-1] 
-                        elif tijden_dict.get('PTA'): raw_tijd = tijden_dict['PTA'][-1]
-                        elif tijden_dict.get('GTA'): raw_tijd = tijden_dict['GTA'][-1]
-                        
-                        if raw_tijd:
-                            clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
-                            b['berekende_eta'] = clean_tijd
-                            logging.info(f"DEBUG: Gevonden detailtijd voor {b.get('Schip')}: {clean_tijd}")
-                        else:
-                            logging.info(f"DEBUG: Geen tijden gevonden in detail voor {b.get('Schip')}")
-                    else:
-                        logging.warning(f"WARNING: Geen ReisId gevonden voor schip {b.get('Schip')}")
-
-                    # STAP 2: RTA KOLOM
-                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
+                        # Haal tijd uit bewegingen
+                        tijd_uit_bewegingen = haal_bewegingen_details(session, reis_id)
+                        if tijd_uit_bewegingen:
+                             b['berekende_eta'] = tijd_uit_bewegingen
+                    
+                    # STAP 2: FALLBACK NAAR RTA KOLOM
+                    if b['berekende_eta'] == 'N/A':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
                             match = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde, re.IGNORECASE)
@@ -581,8 +528,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                                     if match_gen: b['berekende_eta'] = match_gen.group(1)
                                     else: b['berekende_eta'] = rta_waarde
 
-                    # STAP 3: BEREKENING
-                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
+                    # STAP 3: FALLBACK NAAR BEREKENING
+                    if b['berekende_eta'] == 'N/A':
                         eta_dt = None
                         if besteltijd_aware: 
                             if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
