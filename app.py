@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- NIEUW: PARSE TABEL HELPER MET RTA FIX ---
+# --- NIEUW: PARSE TABEL HELPER MET RTA FIX EN REISID DEBUG ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -311,7 +311,16 @@ def parse_table_from_soup(soup):
     kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
     bestellingen = []
     
-    for row in table.find_all('tr')[1:]: 
+    # DEBUG: Check eerste paar rijen
+    rows = table.find_all('tr')
+    if len(rows) > 1:
+        # Pak de eerste datarow (index 1)
+        first_data_row = rows[1]
+        cols = first_data_row.find_all('td')
+        if len(cols) > 11:
+            logging.info(f"DEBUG CELL 11 (SCHIP) HTML: {cols[11]}")
+    
+    for row in rows[1:]: 
         kolom_data = row.find_all('td')
         if not kolom_data: continue
         bestelling = {}
@@ -320,7 +329,7 @@ def parse_table_from_soup(soup):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
                 
-                # RTA FIX: Als tekst leeg is, zoek naar 'title' attribuut (hover tekst)
+                # RTA FIX
                 if k == "RTA" and not value:
                     if cell.has_attr('title'):
                         value = cell['title']
@@ -334,15 +343,21 @@ def parse_table_from_soup(soup):
                 
         if 11 < len(kolom_data):
             schip_cel = kolom_data[11]
-            link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx\?ReisId='))
+            # Probeer case-insensitive en ruimere regex
+            link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
             if link_tag:
-                match = re.search(r'ReisId=(\d+)', link_tag['href'])
-                if match: bestelling['ReisId'] = match.group(1)
+                match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
+                if match: 
+                    bestelling['ReisId'] = match.group(1)
+            else:
+                # Fallback: soms is de cel zelf klikbaar of zit het in onclick
+                pass
+
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v57, Reisplan DEBUGGER) ---")
+    logging.info("--- Running haal_bestellingen_op (v58, ReisId Debug) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,9 +404,9 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN (MET DEBUGGING) ---
+# --- FUNCTIE OM REISPLAN TE LEZEN (MET INPUT FIELDS) ---
 def haal_reisplan_details(session, reis_id):
-    """Leest de detailpagina en logt ALLES voor diagnose."""
+    """Scant de cellen op inhoud (Text OF Input Value)."""
     if not reis_id: return {}
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
@@ -404,38 +419,28 @@ def haal_reisplan_details(session, reis_id):
         for t in soup.find_all('table'):
             if "Besteltijd" in t.get_text():
                 tabel = t
-                logging.info(f"DEBUG REISPLAN: Tabel gevonden voor ID {reis_id}!")
                 break
         
-        if not tabel: 
-            logging.warning(f"DEBUG REISPLAN: Geen tabel gevonden voor {reis_id}")
-            return {}
+        if not tabel: return {}
 
         rows = tabel.find_all('tr')
         if not rows: return {}
         
-        # Log de headers
-        header_cells = rows[0].find_all(['td', 'th'])
-        headers_text = [cell.get_text(strip=True) for cell in header_cells]
-        logging.info(f"DEBUG REISPLAN: Kolommen: {headers_text}")
-        
         # Vind kolom index
         target_index = -1
-        for i, txt in enumerate(headers_text):
+        header_cells = rows[0].find_all(['td', 'th'])
+        for i, cell in enumerate(header_cells):
+            txt = cell.get_text(strip=True)
             if "Saeftinghe" in txt and "Zandvliet" in txt:
                 target_index = i
-                logging.info(f"DEBUG REISPLAN: Saeftinghe gevonden op index {i}")
                 break
             elif "Deurganckdok" in txt and target_index == -1:
                  target_index = i
-                 logging.info(f"DEBUG REISPLAN: Deurganckdok gevonden op index {i}")
 
-        if target_index == -1: 
-             logging.warning(f"DEBUG REISPLAN: Geen relevante kolom gevonden.")
-             return {}
+        if target_index == -1: return {}
 
-        # Scan alle rijen en log de inhoud van de doelkolom
-        for idx, row in enumerate(rows[1:]):
+        # Scan alle rijen
+        for row in rows[1:]:
             cells = row.find_all('td')
             if len(cells) > target_index:
                 cell = cells[target_index]
@@ -450,8 +455,7 @@ def haal_reisplan_details(session, reis_id):
                     input_val = inp.get('value').strip()
                 
                 full_text = f"{label_text} {input_val}".strip()
-                logging.info(f"DEBUG REISPLAN: Rij {idx+1}, Cel inhoud: '{full_text}'")
-
+                
                 if full_text:
                     if "ATA" in full_text: found_times['ATA'].append(full_text)
                     elif "PTA" in full_text: found_times['PTA'].append(full_text)
@@ -541,33 +545,33 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     b['berekende_eta'] = 'N/A'
 
-                    # STAP 1: REISPLAN (PRIORITEIT LOGICA)
-                    tijden_dict = haal_reisplan_details(session, b.get('ReisId'))
-                    raw_tijd = None
-                    
-                    # Prio 1: ATA (Werkelijk)
-                    if tijden_dict.get('ATA'):
-                        raw_tijd = tijden_dict['ATA'][-1] # Laatste update
-                    # Prio 2: PTA (Gepland)
-                    elif tijden_dict.get('PTA'):
-                        raw_tijd = tijden_dict['PTA'][-1]
-                    # Prio 3: GTA (Gewenst)
-                    elif tijden_dict.get('GTA'):
-                        raw_tijd = tijden_dict['GTA'][-1]
-                    
-                    if raw_tijd:
-                        # Verwijder prefixes (PTA, GTA, ATA, OTLB...)
-                        clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
-                        b['berekende_eta'] = clean_tijd
+                    # STAP 0: Check of we een ID hebben
+                    reis_id = b.get('ReisId')
+                    if not reis_id:
+                         logging.warning(f"WARNING: Geen ReisId gevonden voor schip {b.get('Schip')}")
+                    else:
+                        # STAP 1: REISPLAN
+                        tijden_dict = haal_reisplan_details(session, reis_id)
+                        raw_tijd = None
+                        
+                        if tijden_dict.get('ATA'): raw_tijd = tijden_dict['ATA'][-1] 
+                        elif tijden_dict.get('PTA'): raw_tijd = tijden_dict['PTA'][-1]
+                        elif tijden_dict.get('GTA'): raw_tijd = tijden_dict['GTA'][-1]
+                        
+                        if raw_tijd:
+                            clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
+                            b['berekende_eta'] = clean_tijd
 
-                    # STAP 2: RTA KOLOM (Fallback + Regex Fix)
+                    # STAP 2: RTA KOLOM
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
-                            match = re.search(r"SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
+                            # Verbeterde regex: SA/ZV gevolgd door tijd, kap rest af
+                            match = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde, re.IGNORECASE)
                             if match:
-                                    b['berekende_eta'] = f"CP: {match.group(1)}"
+                                    b['berekende_eta'] = f"CP: {match.group(2)}"
                             else:
+                                    # Fallback: zoek gewoon naar een tijdspatroon
                                     match_gen = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                                     if match_gen: b['berekende_eta'] = match_gen.group(1)
                                     else: b['berekende_eta'] = rta_waarde
