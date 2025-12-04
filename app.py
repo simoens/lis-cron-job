@@ -31,13 +31,8 @@ data_lock = threading.Lock()
 # --- FLASK APPLICATIE & DATABASE OPZET ---
 app = Flask(__name__)
 
-# --- CONFIGURATIE & RENDER DATABASE FIX ---
-db_url = os.environ.get('DATABASE_URL')
-if db_url and db_url.startswith("postgres://"):
-    # Fix voor Render: SQLAlchemy 1.4+ vereist 'postgresql://' in plaats van 'postgres://'
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+# --- CONFIGURATIE ---
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # --- BEVEILIGING CONFIGURATIE (Basic Auth) ---
@@ -66,13 +61,8 @@ class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.JSON)
 
-# Probeer database tabellen aan te maken.
-# Als de DB connectie faalt, crasht de app hier (wat zichtbaar is in Render logs)
-try:
-    with app.app_context():
-        db.create_all()
-except Exception as e:
-    logging.critical(f"FATAL: Kon niet verbinden met database. Check DATABASE_URL. Error: {e}")
+with app.app_context():
+    db.create_all()
 
 # --- AANGEPASTE DATABASE FUNCTIES ---
 def load_state_for_comparison():
@@ -110,29 +100,25 @@ def main_task():
 @app.route('/')
 @basic_auth.required 
 def home():
-    try:
-        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-        recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
+    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+    recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
+    
+    with data_lock:
+        if latest_snapshot_obj:
+            app_state["latest_snapshot"] = {
+                "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                "content_data": latest_snapshot_obj.content_data
+            }
         
-        with data_lock:
-            if latest_snapshot_obj:
-                app_state["latest_snapshot"] = {
-                    "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                    "content_data": latest_snapshot_obj.content_data
-                }
-            
-            if recent_changes_list:
-                app_state["change_history"].clear()
-                for change in recent_changes_list:
-                    app_state["change_history"].append({
-                        "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                        "onderwerp": change.onderwerp,
-                        "content": change.content
-                    })
-    except Exception as e:
-        logging.error(f"Database error in home route: {e}")
-        # Fallback als DB niet bereikbaar is, toon lege state
-        
+        if recent_changes_list:
+            app_state["change_history"].clear()
+            for change in recent_changes_list:
+                app_state["change_history"].append({
+                    "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                    "onderwerp": change.onderwerp,
+                    "content": change.content
+                })
+    
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
@@ -158,16 +144,13 @@ def force_snapshot_route():
 
 @app.route('/status')
 def status_check():
-    try:
-        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-        if latest_snapshot_obj:
-            brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
-            return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
-    except Exception:
-        pass
-    
-    with data_lock:
-        return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
+    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+    if latest_snapshot_obj:
+        brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
+        return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
+    else:
+        with data_lock:
+            return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 @app.route('/logboek')
 @basic_auth.required 
@@ -360,7 +343,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v48, RTA Priority + Manual Emulation) ---")
+    logging.info("--- Running haal_bestellingen_op (v46, Simple Default View - MSC Only) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -525,7 +508,12 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     rta_waarde = b.get('RTA', '').strip()
                     
                     if rta_waarde:
-                        b['berekende_eta'] = rta_waarde
+                        # LOGICA AANGEPAST: Filter specifieke GTA: SA/ZV tijd eruit
+                        match = re.search(r"GTA:\s*SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
+                        if match:
+                             b['berekende_eta'] = f"CP: {match.group(1)}"
+                        else:
+                             b['berekende_eta'] = rta_waarde
                     else:
                         # FALLBACK: Oude methode (Reisplan scrapen of berekenen)
                         pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
