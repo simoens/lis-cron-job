@@ -342,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v54, Reisplan Column Fix & Debug) ---")
+    logging.info("--- Running haal_bestellingen_op (v56, Input Field Reader) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,14 +389,16 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN (COLUMN BASED) ---
+# --- FUNCTIE OM REISPLAN TE LEZEN (MET INPUT FIELDS) ---
 def haal_reisplan_details(session, reis_id):
-    """Leest de detailpagina, zoekt de juiste kolom en pakt de onderste waarde."""
-    if not reis_id: return None
+    """Scant de cellen op inhoud (Text OF Input Value)."""
+    if not reis_id: return {}
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
         response = session.get(url, timeout=10)
         soup = BeautifulSoup(response.content, 'lxml')
+        
+        found_times = {'ATA': [], 'PTA': [], 'GTA': []}
         
         tabel = None
         for t in soup.find_all('table'):
@@ -404,50 +406,58 @@ def haal_reisplan_details(session, reis_id):
                 tabel = t
                 break
         
-        if not tabel: return None
+        if not tabel: return {}
 
         rows = tabel.find_all('tr')
-        if not rows: return None
+        if not rows: return {}
         
-        # Vind de index van onze doelkolommen
+        # Vind kolom index
         target_index = -1
-        target_name = ""
-        
         header_cells = rows[0].find_all(['td', 'th'])
-        
-        # Zoek naar Saeftinghe-Zandvliet OF Deurganckdok
         for i, cell in enumerate(header_cells):
             txt = cell.get_text(strip=True)
             if "Saeftinghe" in txt and "Zandvliet" in txt:
                 target_index = i
-                target_name = txt
                 break
-            elif "Deurganckdok" in txt and target_index == -1: # Fallback als Saeftinghe er niet is
+            elif "Deurganckdok" in txt and target_index == -1:
                  target_index = i
-                 target_name = txt
 
-        if target_index == -1:
-             return None
+        if target_index == -1: return {}
 
-        # Nu itereren we de rijen en updaten 'latest_value' telkens als we iets vinden in die kolom
-        latest_value = None
-        
+        # Scan alle rijen
         for row in rows[1:]:
             cells = row.find_all('td')
             if len(cells) > target_index:
-                val = cells[target_index].get_text(strip=True)
-                if val:
-                    latest_value = val
-        
-        # Debug log voor verificatie
-        if latest_value:
-            logging.info(f"DEBUG REISPLAN: Schip ID {reis_id} - Gevonden in kolom '{target_name}': {latest_value}")
+                cell = cells[target_index]
+                
+                # 1. Probeer tekst (zoals "PTA")
+                label_text = cell.get_text(strip=True)
+                
+                # 2. Probeer Input Value (de tijd)
+                input_val = ""
+                inp = cell.find('input')
+                if inp and inp.get('value'):
+                    input_val = inp.get('value').strip()
+                
+                # Combineer ze (zodat we "PTA 04/12..." hebben)
+                # Als de tekst al in de label zit (zonder input), is dat ook goed
+                full_text = label_text + " " + input_val
+                full_text = full_text.strip()
 
-        return latest_value
+                if full_text:
+                    # Check type
+                    if "ATA" in full_text:
+                        found_times['ATA'].append(full_text)
+                    elif "PTA" in full_text:
+                        found_times['PTA'].append(full_text)
+                    elif "GTA" in full_text:
+                        found_times['GTA'].append(full_text)
+
+        return found_times
 
     except Exception as e:
         logging.error(f"Error in haal_reisplan_details voor {reis_id}: {e}")
-        return None
+        return {}
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
@@ -527,25 +537,40 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     b['berekende_eta'] = 'N/A'
 
-                    # STAP 1: REISPLAN (ONDERSTE WAARDE IN KOLOM)
-                    raw_reisplan_tijd = haal_reisplan_details(session, b.get('ReisId'))
+                    # STAP 1: REISPLAN (PRIORITEIT LOGICA)
+                    tijden_dict = haal_reisplan_details(session, b.get('ReisId'))
+                    raw_tijd = None
                     
-                    if raw_reisplan_tijd:
-                        # Schoonmaken (verwijder PTA/GTA/ATA labels)
-                        clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_reisplan_tijd).strip()
+                    # Prio 1: ATA (Werkelijk)
+                    if tijden_dict.get('ATA'):
+                        raw_tijd = tijden_dict['ATA'][-1] # Laatste update
+                    # Prio 2: PTA (Gepland)
+                    elif tijden_dict.get('PTA'):
+                        raw_tijd = tijden_dict['PTA'][-1]
+                    # Prio 3: GTA (Gewenst)
+                    elif tijden_dict.get('GTA'):
+                        raw_tijd = tijden_dict['GTA'][-1]
+                    
+                    if raw_tijd:
+                        # Verwijder prefixes (PTA, GTA, ATA, OTLB...)
+                        clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
                         b['berekende_eta'] = clean_tijd
 
-                    # STAP 2: RTA KOLOM (FALLBACK)
+                    # STAP 2: RTA KOLOM (Fallback + Regex Fix)
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
+                            # Zoek SA/ZV gevolgd door tijd, negeer alles erna (zoals GTPV)
                             match = re.search(r"SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                             if match:
                                     b['berekende_eta'] = f"CP: {match.group(1)}"
                             else:
-                                    b['berekende_eta'] = rta_waarde
+                                    # Fallback generiek
+                                    match_gen = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
+                                    if match_gen: b['berekende_eta'] = match_gen.group(1)
+                                    else: b['berekende_eta'] = rta_waarde
 
-                    # STAP 3: BEREKENING (LAATSTE REDMIDDEL)
+                    # STAP 3: BEREKENING
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         eta_dt = None
                         if besteltijd_aware: 
