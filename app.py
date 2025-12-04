@@ -342,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v56, Input Field Reader) ---")
+    logging.info("--- Running haal_bestellingen_op (v57, Reisplan DEBUGGER) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,9 +389,9 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN (MET INPUT FIELDS) ---
+# --- FUNCTIE OM REISPLAN TE LEZEN (MET DEBUGGING) ---
 def haal_reisplan_details(session, reis_id):
-    """Scant de cellen op inhoud (Text OF Input Value)."""
+    """Leest de detailpagina en logt ALLES voor diagnose."""
     if not reis_id: return {}
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
@@ -404,54 +404,58 @@ def haal_reisplan_details(session, reis_id):
         for t in soup.find_all('table'):
             if "Besteltijd" in t.get_text():
                 tabel = t
+                logging.info(f"DEBUG REISPLAN: Tabel gevonden voor ID {reis_id}!")
                 break
         
-        if not tabel: return {}
+        if not tabel: 
+            logging.warning(f"DEBUG REISPLAN: Geen tabel gevonden voor {reis_id}")
+            return {}
 
         rows = tabel.find_all('tr')
         if not rows: return {}
         
+        # Log de headers
+        header_cells = rows[0].find_all(['td', 'th'])
+        headers_text = [cell.get_text(strip=True) for cell in header_cells]
+        logging.info(f"DEBUG REISPLAN: Kolommen: {headers_text}")
+        
         # Vind kolom index
         target_index = -1
-        header_cells = rows[0].find_all(['td', 'th'])
-        for i, cell in enumerate(header_cells):
-            txt = cell.get_text(strip=True)
+        for i, txt in enumerate(headers_text):
             if "Saeftinghe" in txt and "Zandvliet" in txt:
                 target_index = i
+                logging.info(f"DEBUG REISPLAN: Saeftinghe gevonden op index {i}")
                 break
             elif "Deurganckdok" in txt and target_index == -1:
                  target_index = i
+                 logging.info(f"DEBUG REISPLAN: Deurganckdok gevonden op index {i}")
 
-        if target_index == -1: return {}
+        if target_index == -1: 
+             logging.warning(f"DEBUG REISPLAN: Geen relevante kolom gevonden.")
+             return {}
 
-        # Scan alle rijen
-        for row in rows[1:]:
+        # Scan alle rijen en log de inhoud van de doelkolom
+        for idx, row in enumerate(rows[1:]):
             cells = row.find_all('td')
             if len(cells) > target_index:
                 cell = cells[target_index]
                 
-                # 1. Probeer tekst (zoals "PTA")
+                # 1. Probeer tekst
                 label_text = cell.get_text(strip=True)
                 
-                # 2. Probeer Input Value (de tijd)
+                # 2. Probeer Input Value
                 input_val = ""
                 inp = cell.find('input')
                 if inp and inp.get('value'):
                     input_val = inp.get('value').strip()
                 
-                # Combineer ze (zodat we "PTA 04/12..." hebben)
-                # Als de tekst al in de label zit (zonder input), is dat ook goed
-                full_text = label_text + " " + input_val
-                full_text = full_text.strip()
+                full_text = f"{label_text} {input_val}".strip()
+                logging.info(f"DEBUG REISPLAN: Rij {idx+1}, Cel inhoud: '{full_text}'")
 
                 if full_text:
-                    # Check type
-                    if "ATA" in full_text:
-                        found_times['ATA'].append(full_text)
-                    elif "PTA" in full_text:
-                        found_times['PTA'].append(full_text)
-                    elif "GTA" in full_text:
-                        found_times['GTA'].append(full_text)
+                    if "ATA" in full_text: found_times['ATA'].append(full_text)
+                    elif "PTA" in full_text: found_times['PTA'].append(full_text)
+                    elif "GTA" in full_text: found_times['GTA'].append(full_text)
 
         return found_times
 
@@ -560,12 +564,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         rta_waarde = b.get('RTA', '').strip()
                         if rta_waarde:
-                            # Zoek SA/ZV gevolgd door tijd, negeer alles erna (zoals GTPV)
                             match = re.search(r"SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                             if match:
                                     b['berekende_eta'] = f"CP: {match.group(1)}"
                             else:
-                                    # Fallback generiek
                                     match_gen = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                                     if match_gen: b['berekende_eta'] = match_gen.group(1)
                                     else: b['berekende_eta'] = rta_waarde
