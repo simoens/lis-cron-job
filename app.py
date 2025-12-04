@@ -330,128 +330,38 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v44, Precise Config) ---")
+    logging.info("--- Running haal_bestellingen_op (v46, Simple Default View - MSC Only) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        session.headers.update({'Referer': base_page_url})
         
+        # Gewoon de pagina ophalen. De default view is met 'Eigen reizen' AAN (dus alleen MSC).
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
-        soup_get = BeautifulSoup(get_response.content, 'lxml')
+        soup = BeautifulSoup(get_response.content, 'lxml')
         
-        # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup, skip_all_dropdown_logic=False):
-            data = {}
-            for input_tag in soup.find_all('input'):
-                name = input_tag.get('name')
-                value = input_tag.get('value', '')
-                if not name: continue
-                
-                # Checkbox 'betrokken' (Eigen reizen) MOET WEG
-                if 'select$betrokken' in name: continue 
-                if input_tag.get('type') == 'checkbox': continue
-                if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
-                data[name] = value
-            
-            # Selects verzamelen
-            for select_tag in soup.find_all('select'):
-                name = select_tag.get('name')
-                if not name: continue
-                
-                if skip_all_dropdown_logic:
-                    # Stap 1: Behoud
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
-                else:
-                    # Stap 2: Pak defaults
-                    option = select_tag.find('option', selected=True) or select_tag.find('option')
-                    if option: data[name] = option.get('value', '')
-
-            return data
-
-        # =================================================================
-        # STAP 1: ONTGRENDELING
-        # =================================================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get, skip_all_dropdown_logic=True)
+        alle_bestellingen = parse_table_from_soup(soup)
         
-        form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
-        form_data_step1['__EVENTARGUMENT'] = ''
-        
-        # Datums LEEG (volgens gebruiker moet dit kunnen)
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        form_data_step1['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/' 
-        
-        response_step1 = session.post(base_page_url, data=form_data_step1)
-        response_step1.raise_for_status()
-        soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
-        
-        logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
-        
-        time.sleep(5) # Ruime pauze
-        
-        # =================================================================
-        # STAP 2: ZOEKEN (Met exacte waarden uit logs)
-        # =================================================================
-        logging.info("STAP 2: ZOEKEN (Exacte config: Type='/', Date='')...")
-        
-        form_data_step2 = verzamel_basis_form(soup_step1, skip_all_dropdown_logic=False)
-        
-        # 1. Agent WEG
-        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in form_data_step2:
-            del form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
-
-        # 2. Richting = '/'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-        
-        # 3. Type/Beloodsing = '/' (Uit logs v35 bleek dat 'Alle'='/' is voor dit veld)
-        #    Dit is de cruciale fix t.o.v. v41/v43 die no_value/leeg gebruikten
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = '/'
-
-        # 4. Havens = 'no_value' (Standaard voor Alle bij havens)
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
-        
-        # 5. Datums LEEG
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        
-        # Druk op knop
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
-        
-        if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
-        if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
-        
-        response_step2 = session.post(base_page_url, data=form_data_step2)
-        current_soup = BeautifulSoup(response_step2.content, 'lxml')
-        
-        if "LIS – Fout" in response_step2.text:
-             logging.error("CRITICAL: Server gaf 'LIS - Fout'.")
-             return []
-
-        # ==========================================
-        # STAP 3: PAGINERING
-        # ==========================================
-        alle_bestellingen = parse_table_from_soup(current_soup)
-        logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
-        
+        # Paginering afhandelen (voor het geval MSC veel schepen heeft)
         current_page = 1
-        max_pages = 80 # Ruimte voor 700+ items
+        max_pages = 10 # MSC heeft er waarschijnlijk niet meer dan dit actief
         
         while current_page < max_pages:
             next_page_num = current_page + 1
-            paging_link = current_soup.find('a', href=re.compile(f"Page\${next_page_num}"))
+            # Zoek link naar volgende pagina (Page$2, Page$3 etc)
+            paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
             
-            if not paging_link: break
-            
+            if not paging_link:
+                break
+                
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
             
+            # Voor ASP.NET paging moeten we de __EVENTTARGET en __VIEWSTATE meesturen
             page_form_data = {}
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
-                tag = current_soup.find('input', {'name': hidden})
+                tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
             
+            # Haal target uit de link: javascript:__doPostBack('ctl00$Content...','Page$2')
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
@@ -460,25 +370,18 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters exact zoals in stap 2
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$filter_bld'] = '/'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_van'] = 'no_value'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$lhv_id_naar'] = 'no_value'
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-            page_form_data['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-
+            # POST request voor de volgende pagina
             page_response = session.post(base_page_url, data=page_form_data)
-            current_soup = BeautifulSoup(page_response.content, 'lxml')
+            soup = BeautifulSoup(page_response.content, 'lxml')
             
-            new_items = parse_table_from_soup(current_soup)
+            new_items = parse_table_from_soup(soup)
             if not new_items: break
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
             time.sleep(0.5) 
 
-        logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
+        logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
 
     except Exception as e:
