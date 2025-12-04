@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- NIEUW: PARSE TABEL HELPER MET RTA FIX EN REISID DEBUG ---
+# --- NIEUW: PARSE TABEL HELPER MET UNIVERSELE ID FINDER ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -311,53 +311,44 @@ def parse_table_from_soup(soup):
     kolom_indices = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
     bestellingen = []
     
-    # DEBUG: Check eerste paar rijen
-    rows = table.find_all('tr')
-    if len(rows) > 1:
-        # Pak de eerste datarow (index 1)
-        first_data_row = rows[1]
-        cols = first_data_row.find_all('td')
-        if len(cols) > 11:
-            logging.info(f"DEBUG CELL 11 (SCHIP) HTML: {cols[11]}")
-    
-    for row in rows[1:]: 
+    for row in table.find_all('tr')[1:]: 
         kolom_data = row.find_all('td')
         if not kolom_data: continue
         bestelling = {}
+        
+        # 1. DATA LEZEN
         for k, i in kolom_indices.items():
             if i < len(kolom_data):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
-                
-                # RTA FIX
+                # RTA FIX (met title check)
                 if k == "RTA" and not value:
-                    if cell.has_attr('title'):
-                        value = cell['title']
+                    if cell.has_attr('title'): value = cell['title']
                     else:
-                        child_with_title = cell.find(lambda tag: tag.has_attr('title'))
-                        if child_with_title:
-                            value = child_with_title['title']
-
+                         child = cell.find(lambda tag: tag.has_attr('title'))
+                         if child: value = child['title']
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
-                
-        if 11 < len(kolom_data):
-            schip_cel = kolom_data[11]
-            # Probeer case-insensitive en ruimere regex
-            link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
-            if link_tag:
-                match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
-                if match: 
-                    bestelling['ReisId'] = match.group(1)
-            else:
-                # Fallback: soms is de cel zelf klikbaar of zit het in onclick
-                pass
+
+        # 2. REIS ID ZOEKEN (OVERAL IN DE RIJ)
+        # In v58 zochten we alleen in kolom 11. Nu scannen we de hele rij.
+        link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
+        if link_tag:
+            match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
+            if match:
+                bestelling['ReisId'] = match.group(1)
+        
+        # 3. DEBUG DUMP ALS NIET GEVONDEN
+        if 'ReisId' not in bestelling:
+             # Log alleen voor bekende schepen om spam te voorkomen
+             if 'WEC' in bestelling.get('Schip', '').upper() or 'MSC' in bestelling.get('Schip', '').upper():
+                  logging.warning(f"DEBUG ROW HTML ({bestelling.get('Schip')}): {row}")
 
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v58, ReisId Debug) ---")
+    logging.info("--- Running haal_bestellingen_op (v59, Row-Wide ID Search) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
