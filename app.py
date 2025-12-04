@@ -31,8 +31,13 @@ data_lock = threading.Lock()
 # --- FLASK APPLICATIE & DATABASE OPZET ---
 app = Flask(__name__)
 
-# --- CONFIGURATIE ---
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+# --- CONFIGURATIE & RENDER DATABASE FIX ---
+db_url = os.environ.get('DATABASE_URL')
+if db_url and db_url.startswith("postgres://"):
+    # Fix voor Render: SQLAlchemy 1.4+ vereist 'postgresql://' in plaats van 'postgres://'
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # --- BEVEILIGING CONFIGURATIE (Basic Auth) ---
@@ -61,8 +66,13 @@ class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.JSON)
 
-with app.app_context():
-    db.create_all()
+# Probeer database tabellen aan te maken.
+# Als de DB connectie faalt, crasht de app hier (wat zichtbaar is in Render logs)
+try:
+    with app.app_context():
+        db.create_all()
+except Exception as e:
+    logging.critical(f"FATAL: Kon niet verbinden met database. Check DATABASE_URL. Error: {e}")
 
 # --- AANGEPASTE DATABASE FUNCTIES ---
 def load_state_for_comparison():
@@ -100,25 +110,29 @@ def main_task():
 @app.route('/')
 @basic_auth.required 
 def home():
-    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-    recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
-    
-    with data_lock:
-        if latest_snapshot_obj:
-            app_state["latest_snapshot"] = {
-                "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                "content_data": latest_snapshot_obj.content_data
-            }
+    try:
+        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+        recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
         
-        if recent_changes_list:
-            app_state["change_history"].clear()
-            for change in recent_changes_list:
-                app_state["change_history"].append({
-                    "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                    "onderwerp": change.onderwerp,
-                    "content": change.content
-                })
-    
+        with data_lock:
+            if latest_snapshot_obj:
+                app_state["latest_snapshot"] = {
+                    "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                    "content_data": latest_snapshot_obj.content_data
+                }
+            
+            if recent_changes_list:
+                app_state["change_history"].clear()
+                for change in recent_changes_list:
+                    app_state["change_history"].append({
+                        "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                        "onderwerp": change.onderwerp,
+                        "content": change.content
+                    })
+    except Exception as e:
+        logging.error(f"Database error in home route: {e}")
+        # Fallback als DB niet bereikbaar is, toon lege state
+        
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
@@ -144,13 +158,16 @@ def force_snapshot_route():
 
 @app.route('/status')
 def status_check():
-    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-    if latest_snapshot_obj:
-        brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
-        return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
-    else:
-        with data_lock:
-            return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
+    try:
+        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+        if latest_snapshot_obj:
+            brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
+            return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
+    except Exception:
+        pass
+    
+    with data_lock:
+        return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 @app.route('/logboek')
 @basic_auth.required 
@@ -346,93 +363,35 @@ def haal_bestellingen_op(session):
     logging.info("--- Running haal_bestellingen_op (v48, RTA Priority + Manual Emulation) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        session.headers.update({'Referer': base_page_url})
         
+        # Gewoon de pagina ophalen. De default view is met 'Eigen reizen' AAN (dus alleen MSC).
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
-        soup_get = BeautifulSoup(get_response.content, 'lxml')
+        soup = BeautifulSoup(get_response.content, 'lxml')
         
-        # --- FUNCTIE OM FORM DATA TE VERZAMELEN ---
-        def verzamel_basis_form(soup):
-            data = {}
-            # Inputs
-            for input_tag in soup.find_all('input'):
-                name = input_tag.get('name')
-                value = input_tag.get('value', '')
-                if not name: continue
-                # Checkbox 'betrokken' (Eigen reizen) ALTIJD eruit halen
-                if 'select$betrokken' in name: continue 
-                if input_tag.get('type') == 'checkbox': continue
-                if input_tag.get('type') in ['submit', 'image', 'button', 'reset']: continue
-                data[name] = value
-            
-            # Selects (PAK GEWOON WAT ER STAAT)
-            for select_tag in soup.find_all('select'):
-                name = select_tag.get('name')
-                if not name: continue
-                option = select_tag.find('option', selected=True) or select_tag.find('option')
-                if option: data[name] = option.get('value', '')
-            return data
-
-        # =================================================================
-        # STAP 1: KLIK OP VINKJE (Eigen Reizen UIT)
-        # =================================================================
-        logging.info("STAP 1: Verstuur 'Uncheck Event'...")
-        form_data_step1 = verzamel_basis_form(soup_get)
+        alle_bestellingen = parse_table_from_soup(soup)
         
-        # Trigger de checkbox change event
-        form_data_step1['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
-        form_data_step1['__EVENTARGUMENT'] = ''
-        
-        response_step1 = session.post(base_page_url, data=form_data_step1)
-        response_step1.raise_for_status()
-        soup_step1 = BeautifulSoup(response_step1.content, 'lxml')
-        
-        logging.info(f"Na Stap 1 gevonden items: {len(parse_table_from_soup(soup_step1))}")
-        
-        # WACHT (Zoals je manueel ook doet)
-        time.sleep(3)
-        
-        # =================================================================
-        # STAP 2: KLIK OP ZOEKEN (Zonder iets te veranderen!)
-        # =================================================================
-        logging.info("STAP 2: Klik op ZOEKEN (Met formulier zoals ontvangen)...")
-        
-        # We pakken de state precies zoals de server hem teruggaf in Stap 1
-        form_data_step2 = verzamel_basis_form(soup_step1)
-        
-        # We voegen ALLEEN de knop toe
-        form_data_step2['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
-        
-        # Zorg dat we geen Event Targets meesturen van de vorige stap
-        if '__EVENTTARGET' in form_data_step2: del form_data_step2['__EVENTTARGET']
-        if '__EVENTARGUMENT' in form_data_step2: del form_data_step2['__EVENTARGUMENT']
-        
-        response_step2 = session.post(base_page_url, data=form_data_step2)
-        current_soup = BeautifulSoup(response_step2.content, 'lxml')
-        
-        # ==========================================
-        # STAP 3: PAGINERING
-        # ==========================================
-        alle_bestellingen = parse_table_from_soup(current_soup)
-        logging.info(f"Items gevonden op pagina 1: {len(alle_bestellingen)}")
-        
+        # Paginering afhandelen (voor het geval MSC veel schepen heeft)
         current_page = 1
-        max_pages = 60 
+        max_pages = 10 # MSC heeft er waarschijnlijk niet meer dan dit actief
         
         while current_page < max_pages:
             next_page_num = current_page + 1
-            paging_link = current_soup.find('a', href=re.compile(f"Page\${next_page_num}"))
+            # Zoek link naar volgende pagina (Page$2, Page$3 etc)
+            paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
             
-            if not paging_link: break
-            
+            if not paging_link:
+                break
+                
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
             
+            # Voor ASP.NET paging moeten we de __EVENTTARGET en __VIEWSTATE meesturen
             page_form_data = {}
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
-                tag = current_soup.find('input', {'name': hidden})
+                tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
             
+            # Haal target uit de link: javascript:__doPostBack('ctl00$Content...','Page$2')
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
@@ -441,22 +400,18 @@ def haal_bestellingen_op(session):
             else:
                 break
             
-            # Behoud filters (Kopieer alles van stap 2 behalve knop)
-            for k, v in form_data_step2.items():
-                if k not in page_form_data and 'btnSearch' not in k:
-                    page_form_data[k] = v
-
+            # POST request voor de volgende pagina
             page_response = session.post(base_page_url, data=page_form_data)
-            current_soup = BeautifulSoup(page_response.content, 'lxml')
+            soup = BeautifulSoup(page_response.content, 'lxml')
             
-            new_items = parse_table_from_soup(current_soup)
+            new_items = parse_table_from_soup(soup)
             if not new_items: break
                 
             alle_bestellingen.extend(new_items)
             current_page += 1
             time.sleep(0.5) 
 
-        logging.info(f"Totaal {len(alle_bestellingen)} bestellingen opgehaald over {current_page} pagina's.")
+        logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
 
     except Exception as e:
