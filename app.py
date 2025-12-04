@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- NIEUW: PARSE TABEL HELPER MET UNIVERSELE ID FINDER ---
+# --- AANGEPAST: PARSE TABEL HELPER MET SLIMME ID FINDER (v60) ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -321,7 +321,7 @@ def parse_table_from_soup(soup):
             if i < len(kolom_data):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
-                # RTA FIX (met title check)
+                # RTA FIX
                 if k == "RTA" and not value:
                     if cell.has_attr('title'): value = cell['title']
                     else:
@@ -330,29 +330,30 @@ def parse_table_from_soup(soup):
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
 
-        # 2. REIS ID ZOEKEN (OVERAL IN DE RIJ)
-        # In v58 zochten we alleen in kolom 11. Nu scannen we de hele rij.
+        # 2. REIS ID ZOEKEN (LINK OF ONCLICK)
+        # Optie A: Link
         link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
         if link_tag:
             match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
+            if match: bestelling['ReisId'] = match.group(1)
+        
+        # Optie B: Onclick rij (voor als link ontbreekt)
+        if 'ReisId' not in bestelling and row.has_attr('onclick'):
+            onclick_text = row['onclick']
+            # Zoek naar value=12345...
+            match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
             if match:
                 bestelling['ReisId'] = match.group(1)
-        
-        # 3. DEBUG DUMP ALS NIET GEVONDEN
-        if 'ReisId' not in bestelling:
-             # Log alleen voor bekende schepen om spam te voorkomen
-             if 'WEC' in bestelling.get('Schip', '').upper() or 'MSC' in bestelling.get('Schip', '').upper():
-                  logging.warning(f"DEBUG ROW HTML ({bestelling.get('Schip')}): {row}")
 
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v59, Row-Wide ID Search) ---")
+    logging.info("--- Running haal_bestellingen_op (v60, OnClick ID Extraction) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
-        # Gewoon de pagina ophalen. De default view is met 'Eigen reizen' AAN (dus alleen MSC).
+        # Gewoon de pagina ophalen.
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
@@ -395,7 +396,7 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- FUNCTIE OM REISPLAN TE LEZEN (MET INPUT FIELDS) ---
+# --- FUNCTIE OM REISPLAN TE LEZEN ---
 def haal_reisplan_details(session, reis_id):
     """Scant de cellen op inhoud (Text OF Input Value)."""
     if not reis_id: return {}
