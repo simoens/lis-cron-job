@@ -342,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v48, RTA Priority + Manual Emulation) ---")
+    logging.info("--- Running haal_bestellingen_op (v52, RTA Priority Flip) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -389,7 +389,7 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- AANGEPAST: FUNCTIE OM REISPLAN TABEL TE LEZEN EN ONDERSTE WAARDE TE PAKKEN ---
+# --- FUNCTIE OM REISPLAN TE LEZEN (ONDERSTE WAARDE) ---
 def haal_reisplan_details(session, reis_id):
     """Leest de detailpagina en geeft een dictionary terug met tijden per locatie."""
     if not reis_id: return {}
@@ -399,7 +399,6 @@ def haal_reisplan_details(session, reis_id):
         soup = BeautifulSoup(response.content, 'lxml')
         
         details = {}
-        
         tabel = None
         for t in soup.find_all('table'):
             if "Besteltijd" in t.get_text():
@@ -412,14 +411,13 @@ def haal_reisplan_details(session, reis_id):
         if not rows: return {}
         
         locaties = []
-        header_cells = rows[0].find_all(['td', 'th']) # td of th
+        header_cells = rows[0].find_all(['td', 'th']) 
         
         for i, cell in enumerate(header_cells):
             txt = cell.get_text(strip=True)
             if i == 0: continue
             locaties.append(txt)
 
-        # Loop door rijen. We slaan elke waarde op, dus de laatste (onderste) overschrijft de vorige.
         for row in rows[1:]:
             cells = row.find_all('td')
             if not cells: continue
@@ -431,13 +429,8 @@ def haal_reisplan_details(session, reis_id):
                 if i < len(locaties):
                     locatie_naam = locaties[i]
                     tijd_waarde = cell.get_text(strip=True)
-                    
                     if tijd_waarde:
                         if locatie_naam not in details: details[locatie_naam] = {}
-                        # Omdat we van boven naar beneden lezen, is de laatste assignment automatisch de onderste waarde
-                        # Echter, details[locatie_naam] is een dict met keys als 'Besteltijd', 'ATA'.
-                        # De gebruiker wil gewoon de onderste waarde, ongeacht of het ATA of GTA is.
-                        # Dus we slaan het op onder de key van de rij, en in filter_snapshot_schepen pakken we de laatste.
                         details[locatie_naam][rij_label] = tijd_waarde
 
         return details
@@ -522,38 +515,33 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if is_sluisplanning: show_ship = True
                 elif besteltijd_aware and (grens_in_verleden <= besteltijd_aware <= grens_in_toekomst): show_ship = True
                 if show_ship:
-                    # EERST: Probeer RTA (uit de tabel, inclusief hover)
-                    rta_waarde = b.get('RTA', '').strip()
                     b['berekende_eta'] = 'N/A'
 
-                    if rta_waarde:
-                        # Als er een RTA is, gebruik die
-                        match = re.search(r"GTA:\s*SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
-                        if match:
-                             b['berekende_eta'] = f"CP: {match.group(1)}"
-                        else:
-                             b['berekende_eta'] = rta_waarde
+                    # STAP 1: REISPLAN (Hogere Prioriteit)
+                    details = haal_reisplan_details(session, b.get('ReisId'))
+                    target_locs = [k for k in details.keys() if 'Zandvliet' in k or 'Saeftinghe' in k]
+                    if not target_locs: target_locs = [k for k in details.keys() if 'Deurganckdok' in k]
                     
-                    # STAP 2: Als RTA leeg was, duik in het REISPLAN
-                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
-                        details = haal_reisplan_details(session, b.get('ReisId'))
-                        
-                        target_locs = [k for k in details.keys() if 'Zandvliet' in k or 'Saeftinghe' in k]
-                        if not target_locs: target_locs = [k for k in details.keys() if 'Deurganckdok' in k]
-                        
-                        if target_locs:
-                            loc = target_locs[0]
-                            tijden = details[loc] # Dict {RijNaam: Waarde}
-                            
-                            # --- HIER IS DE FIX ---
-                            # We willen de ONDERSTE waarde (laatste in de dict)
-                            if tijden:
-                                raw_tijd = list(tijden.values())[-1] # Pak de laatste
-                                clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
-                                b['berekende_eta'] = clean_tijd
+                    if target_locs:
+                        loc = target_locs[0]
+                        tijden = details[loc]
+                        if tijden:
+                            raw_tijd = list(tijden.values())[-1] # Onderste waarde
+                            clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
+                            b['berekende_eta'] = clean_tijd
 
-                    # STAP 3: Als alles faalt, val terug op de vuistregel (+6u)
-                    if b['berekende_eta'] == 'N/A':
+                    # STAP 2: RTA KOLOM (Fallback)
+                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
+                        rta_waarde = b.get('RTA', '').strip()
+                        if rta_waarde:
+                            match = re.search(r"GTA:\s*SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
+                            if match:
+                                    b['berekende_eta'] = f"CP: {match.group(1)}"
+                            else:
+                                    b['berekende_eta'] = rta_waarde
+
+                    # STAP 3: BEREKENING (Laatste redmiddel)
+                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
                         eta_dt = None
                         if besteltijd_aware: 
                             if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
