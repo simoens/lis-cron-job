@@ -325,7 +325,6 @@ def parse_table_from_soup(soup):
                     if cell.has_attr('title'):
                         value = cell['title']
                     else:
-                        # Soms zit het in een child element (span, div, img)
                         child_with_title = cell.find(lambda tag: tag.has_attr('title'))
                         if child_with_title:
                             value = child_with_title['title']
@@ -343,7 +342,7 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v46, Simple Default View - MSC Only) ---")
+    logging.info("--- Running haal_bestellingen_op (v48, RTA Priority + Manual Emulation) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -354,42 +353,31 @@ def haal_bestellingen_op(session):
         
         alle_bestellingen = parse_table_from_soup(soup)
         
-        # Paginering afhandelen (voor het geval MSC veel schepen heeft)
+        # Paginering afhandelen
         current_page = 1
-        max_pages = 10 # MSC heeft er waarschijnlijk niet meer dan dit actief
+        max_pages = 10 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
-            # Zoek link naar volgende pagina (Page$2, Page$3 etc)
             paging_link = soup.find('a', href=re.compile(f"Page\${next_page_num}"))
-            
-            if not paging_link:
-                break
-                
+            if not paging_link: break
             logging.info(f"Paginering: Ophalen pagina {next_page_num}...")
-            
-            # Voor ASP.NET paging moeten we de __EVENTTARGET en __VIEWSTATE meesturen
             page_form_data = {}
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
             
-            # Haal target uit de link: javascript:__doPostBack('ctl00$Content...','Page$2')
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
-            else:
-                break
+            else: break
             
-            # POST request voor de volgende pagina
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
-            
             new_items = parse_table_from_soup(soup)
             if not new_items: break
-                
             alle_bestellingen.extend(new_items)
             current_page += 1
             time.sleep(0.5) 
@@ -401,32 +389,62 @@ def haal_bestellingen_op(session):
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-def haal_pta_van_reisplan(session, reis_id):
-    if not reis_id: return None
+# --- AANGEPAST: FUNCTIE OM REISPLAN TABEL TE LEZEN EN ONDERSTE WAARDE TE PAKKEN ---
+def haal_reisplan_details(session, reis_id):
+    """Leest de detailpagina en geeft een dictionary terug met tijden per locatie."""
+    if not reis_id: return {}
     try:
         url = f"https://lis.loodswezen.be/Lis/Reisplan.aspx?ReisId={reis_id}"
         response = session.get(url, timeout=10)
         soup = BeautifulSoup(response.content, 'lxml')
-        laatste_pta_gevonden = None
-        pta_pattern = re.compile(r'\d{2}-\d{2} \d{2}:\d{2}')
-        for row in soup.find_all('tr'):
-            if row.find(text=re.compile("Saeftinghe - Zandvliet")):
-                for cell in row.find_all('td'):
-                    match = pta_pattern.search(cell.get_text())
-                    if match: laatste_pta_gevonden = match.group(0)
-        if laatste_pta_gevonden:
-            try:
-                pta_schoon = re.sub(r'\s+', ' ', laatste_pta_gevonden.strip())
-                dt_obj = datetime.strptime(pta_schoon, '%d-%m %H:%M')
-                now = datetime.now()
-                dt_obj = dt_obj.replace(year=now.year)
-                if dt_obj < now - timedelta(days=180): dt_obj = dt_obj.replace(year=now.year + 1)
-                return dt_obj.strftime("%d/%m/%y %H:%M")
-            except ValueError: return laatste_pta_gevonden
-        return None
+        
+        details = {}
+        
+        tabel = None
+        for t in soup.find_all('table'):
+            if "Besteltijd" in t.get_text():
+                tabel = t
+                break
+        
+        if not tabel: return {}
+
+        rows = tabel.find_all('tr')
+        if not rows: return {}
+        
+        locaties = []
+        header_cells = rows[0].find_all(['td', 'th']) # td of th
+        
+        for i, cell in enumerate(header_cells):
+            txt = cell.get_text(strip=True)
+            if i == 0: continue
+            locaties.append(txt)
+
+        # Loop door rijen. We slaan elke waarde op, dus de laatste (onderste) overschrijft de vorige.
+        for row in rows[1:]:
+            cells = row.find_all('td')
+            if not cells: continue
+            
+            rij_label = cells[0].get_text(strip=True).replace(':', '') 
+            if not rij_label: continue
+            
+            for i, cell in enumerate(cells[1:]):
+                if i < len(locaties):
+                    locatie_naam = locaties[i]
+                    tijd_waarde = cell.get_text(strip=True)
+                    
+                    if tijd_waarde:
+                        if locatie_naam not in details: details[locatie_naam] = {}
+                        # Omdat we van boven naar beneden lezen, is de laatste assignment automatisch de onderste waarde
+                        # Echter, details[locatie_naam] is een dict met keys als 'Besteltijd', 'ATA'.
+                        # De gebruiker wil gewoon de onderste waarde, ongeacht of het ATA of GTA is.
+                        # Dus we slaan het op onder de key van de rij, en in filter_snapshot_schepen pakken we de laatste.
+                        details[locatie_naam][rij_label] = tijd_waarde
+
+        return details
+
     except Exception as e:
-        logging.error(f"Error fetching Reisplan {reis_id}: {e}")
-        return None
+        logging.error(f"Error in haal_reisplan_details voor {reis_id}: {e}")
+        return {}
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
@@ -506,24 +524,41 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     # EERST: Probeer RTA (uit de tabel, inclusief hover)
                     rta_waarde = b.get('RTA', '').strip()
-                    
+                    b['berekende_eta'] = 'N/A'
+
                     if rta_waarde:
-                        # LOGICA AANGEPAST: Filter specifieke GTA: SA/ZV tijd eruit
+                        # Als er een RTA is, gebruik die
                         match = re.search(r"GTA:\s*SA/ZV\s+(\d{2}/\d{2}\s+\d{2}:\d{2})", rta_waarde)
                         if match:
                              b['berekende_eta'] = f"CP: {match.group(1)}"
                         else:
                              b['berekende_eta'] = rta_waarde
-                    else:
-                        # FALLBACK: Oude methode (Reisplan scrapen of berekenen)
-                        pta_saeftinghe = haal_pta_van_reisplan(session, b.get('ReisId'))
-                        b['berekende_eta'] = pta_saeftinghe if pta_saeftinghe else 'N/A'
-                        if b['berekende_eta'] == 'N/A':
-                            eta_dt = None
-                            if besteltijd_aware: 
-                                if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
-                                elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
-                                if eta_dt: b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
+                    
+                    # STAP 2: Als RTA leeg was, duik in het REISPLAN
+                    if b['berekende_eta'] == 'N/A' or b['berekende_eta'] == '':
+                        details = haal_reisplan_details(session, b.get('ReisId'))
+                        
+                        target_locs = [k for k in details.keys() if 'Zandvliet' in k or 'Saeftinghe' in k]
+                        if not target_locs: target_locs = [k for k in details.keys() if 'Deurganckdok' in k]
+                        
+                        if target_locs:
+                            loc = target_locs[0]
+                            tijden = details[loc] # Dict {RijNaam: Waarde}
+                            
+                            # --- HIER IS DE FIX ---
+                            # We willen de ONDERSTE waarde (laatste in de dict)
+                            if tijden:
+                                raw_tijd = list(tijden.values())[-1] # Pak de laatste
+                                clean_tijd = re.sub(r'^(PTA|GTA|ATA|OTLB|GTLB)\s+', '', raw_tijd).strip()
+                                b['berekende_eta'] = clean_tijd
+
+                    # STAP 3: Als alles faalt, val terug op de vuistregel (+6u)
+                    if b['berekende_eta'] == 'N/A':
+                        eta_dt = None
+                        if besteltijd_aware: 
+                            if "wandelaar" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=6)
+                            elif "steenbank" in entry_point: eta_dt = besteltijd_aware + timedelta(hours=7)
+                            if eta_dt: b['berekende_eta'] = eta_dt.strftime("%d/%m/%y %H:%M")
                     
                     gefilterd["INKOMEND"].append(b)
             
