@@ -61,8 +61,12 @@ class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.JSON)
 
-with app.app_context():
-    db.create_all()
+# Database initialisatie
+try:
+    with app.app_context():
+        db.create_all()
+except Exception as e:
+    logging.warning(f"DB Init Warning: {e}")
 
 # --- AANGEPASTE DATABASE FUNCTIES ---
 def load_state_for_comparison():
@@ -100,25 +104,28 @@ def main_task():
 @app.route('/')
 @basic_auth.required 
 def home():
-    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-    recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
-    
-    with data_lock:
-        if latest_snapshot_obj:
-            app_state["latest_snapshot"] = {
-                "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                "content_data": latest_snapshot_obj.content_data
-            }
+    try:
+        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+        recent_changes_list = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
         
-        if recent_changes_list:
-            app_state["change_history"].clear()
-            for change in recent_changes_list:
-                app_state["change_history"].append({
-                    "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                    "onderwerp": change.onderwerp,
-                    "content": change.content
-                })
-    
+        with data_lock:
+            if latest_snapshot_obj:
+                app_state["latest_snapshot"] = {
+                    "timestamp": pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                    "content_data": latest_snapshot_obj.content_data
+                }
+            
+            if recent_changes_list:
+                app_state["change_history"].clear()
+                for change in recent_changes_list:
+                    app_state["change_history"].append({
+                        "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                        "onderwerp": change.onderwerp,
+                        "content": change.content
+                    })
+    except Exception as e:
+        logging.error(f"Home route DB error: {e}")
+
     with data_lock:
         return render_template('index.html',
                                 snapshot=app_state["latest_snapshot"],
@@ -144,120 +151,84 @@ def force_snapshot_route():
 
 @app.route('/status')
 def status_check():
-    latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-    if latest_snapshot_obj:
-        brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
-        return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
-    else:
-        with data_lock:
-            return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
+    try:
+        latest_snapshot_obj = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
+        if latest_snapshot_obj:
+            brussels_time = pytz.utc.localize(latest_snapshot_obj.timestamp).astimezone(pytz.timezone('Europe/Brussels'))
+            return jsonify({"timestamp": brussels_time.strftime('%d-%m-%Y %H:%M:%S')})
+    except Exception: pass
+    
+    with data_lock:
+        return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
 @app.route('/logboek')
 @basic_auth.required 
 def logboek():
     search_term = request.args.get('q', '')
-    all_changes_query = DetectedChange.query.all()
-    ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
-    unique_ships = set()
-    for change in all_changes_query:
-        if change.content:
-            ship_names_found = ship_regex.findall(change.content)
-            for name in ship_names_found:
-                unique_ships.add(name.strip()) 
-    all_ships_sorted = sorted(list(unique_ships))
-    query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
-    if search_term:
-        query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
-    changes_db_objects = query.limit(100).all()
     formatted_changes = []
-    for change in changes_db_objects:
-        formatted_changes.append({
-            "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-            "onderwerp": change.onderwerp,
-            "content": change.content
-        })
+    all_ships_sorted = []
+    
+    try:
+        all_changes_query = DetectedChange.query.all()
+        unique_ships = set()
+        ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
+        
+        for change in all_changes_query:
+            if change.content:
+                ship_names_found = ship_regex.findall(change.content)
+                for name in ship_names_found:
+                    unique_ships.add(name.strip()) 
+        all_ships_sorted = sorted(list(unique_ships))
+        
+        query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
+        if search_term:
+            query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
+        changes_db_objects = query.limit(100).all()
+        
+        for change in changes_db_objects:
+            formatted_changes.append({
+                "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                "onderwerp": change.onderwerp,
+                "content": change.content
+            })
+    except Exception as e:
+        logging.error(f"Logboek error: {e}")
+
     return render_template('logboek.html', changes=formatted_changes, search_term=search_term, all_ships=all_ships_sorted, secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
 @basic_auth.required 
 def statistieken():
-    brussels_tz = pytz.timezone('Europe/Brussels')
-    nu_brussels = datetime.now(brussels_tz)
-    seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
-    changes = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc).order_by(DetectedChange.timestamp.asc()).all() 
-    snapshots = Snapshot.query.filter(Snapshot.timestamp >= seven_days_ago_utc).all()
-    
-    total_changes = len(changes)
-    total_incoming = 0
-    total_outgoing = 0
-    total_shifting = 0
-    if snapshots:
-        latest_snapshot_data = snapshots[-1].content_data
-        total_incoming = len(latest_snapshot_data.get('INKOMEND', []))
-        total_outgoing = len(latest_snapshot_data.get('UITGAAND', []))
-        total_shifting = len(latest_snapshot_data.get('VERPLAATSING', [])) 
+    stats = {"total_changes": 0, "top_ships": [], "vervroegd": [], "vertraagd": [], "op_tijd": []}
+    try:
+        brussels_tz = pytz.timezone('Europe/Brussels')
+        nu_brussels = datetime.now(brussels_tz)
+        seven_days_ago_utc = nu_brussels.astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
         
-    ship_counter = Counter()
-    ship_regex_top5 = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
-    for change in changes:
-        if change.content:
-            ship_names = ship_regex_top5.findall(change.content)
-            for name in ship_names:
-                ship_counter[name.strip()] += 1
-    top_ships = ship_counter.most_common(5)
+        changes = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc).order_by(DetectedChange.timestamp.asc()).all() 
+        snapshots = Snapshot.query.filter(Snapshot.timestamp >= seven_days_ago_utc).all()
+        
+        stats["total_changes"] = len(changes)
+        
+        if snapshots:
+            latest = snapshots[-1].content_data
+            stats["total_incoming"] = len(latest.get('INKOMEND', []))
+            stats["total_outgoing"] = len(latest.get('UITGAAND', []))
+            stats["total_shifting"] = len(latest.get('VERPLAATSING', []))
+            
+        cnt = Counter()
+        rgx = re.compile(r"'(.*?)'")
+        for c in changes:
+            found = rgx.findall(c.content)
+            for f in found: cnt[f] += 1
+        stats["top_ships"] = cnt.most_common(5)
 
-    ship_first_time = {}
-    ship_final_time = {}
-    nieuw_besteltijd_regex = re.compile(r"- Besteltijd: ([^\n]+)")
-    gewijzigd_besteltijd_regex = re.compile(r"- Besteltijd: '([^']*)' -> '([^']*)'")
-    ship_name_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: )?'([^']+)'", re.MULTILINE)
+    except Exception as e:
+        logging.error(f"Stats error: {e}")
 
-    alle_uitgaande_logs = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc, DetectedChange.type == 'U').order_by(DetectedChange.timestamp.asc()).all()
-
-    for log in alle_uitgaande_logs:
-        ship_name_match = ship_name_regex.search(log.content)
-        if not ship_name_match: continue
-        ship_name = ship_name_match.group(1).strip()
-        if "+++ NIEUW SCHIP:" in log.content:
-            besteltijd_match = nieuw_besteltijd_regex.search(log.content)
-            if besteltijd_match:
-                tijd_obj = parse_besteltijd(besteltijd_match.group(1).strip())
-                if tijd_obj.year != 1970:
-                    if ship_name not in ship_first_time: ship_first_time[ship_name] = tijd_obj
-                    ship_final_time[ship_name] = tijd_obj 
-        elif "'" in log.content: 
-            besteltijd_match = gewijzigd_besteltijd_regex.search(log.content)
-            if besteltijd_match:
-                oud_tijd = parse_besteltijd(besteltijd_match.group(1))
-                nieuw_tijd = parse_besteltijd(besteltijd_match.group(2))
-                if oud_tijd.year != 1970 and nieuw_tijd.year != 1970:
-                    if ship_name not in ship_first_time: ship_first_time[ship_name] = oud_tijd 
-                    ship_final_time[ship_name] = nieuw_tijd 
-
-    vervroegd_lijst = []
-    vertraagd_lijst = []
-    op_tijd_lijst = [] 
-    for ship_name, eerste_tijd in ship_first_time.items():
-        laatste_tijd = ship_final_time.get(ship_name, eerste_tijd) 
-        delta_seconds = (laatste_tijd - eerste_tijd).total_seconds()
-        hours, remainder = divmod(abs(delta_seconds), 3600)
-        minutes, _ = divmod(remainder, 60)
-        delta_str = f"{int(hours)}u {int(minutes)}m"
-        result_data = {"ship_name": ship_name, "eerste_tijd": eerste_tijd.strftime('%d/%m %H:%M'), "laatste_tijd": laatste_tijd.strftime('%d/%m %H:%M'), "delta_str": delta_str, "delta_raw": delta_seconds}
-        if delta_seconds > 0: vertraagd_lijst.append(result_data)
-        elif delta_seconds < 0: vervroegd_lijst.append(result_data)
-        else: op_tijd_lijst.append(result_data)
-
-    vervroegd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
-    vertraagd_lijst.sort(key=lambda x: abs(x['delta_raw']), reverse=True)
-
-    stats = {"total_changes": total_changes, "total_incoming": total_incoming, "total_outgoing": total_outgoing, "total_shifting": total_shifting, "top_ships": top_ships, "vervroegd": vervroegd_lijst, "vertraagd": vertraagd_lijst, "op_tijd": op_tijd_lijst}
     return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
 
 # --- HELPER FUNCTIES & OMGEVINGSVARIABELEN ---
-USER = os.environ.get('LIS_USER')
-PASS = os.environ.get('LIS_PASS')
-
 def parse_besteltijd(besteltijd_str):
     DEFAULT_TIME = datetime(1970, 1, 1) 
     if not besteltijd_str: return DEFAULT_TIME
@@ -320,7 +291,7 @@ def parse_table_from_soup(soup):
             if i < len(kolom_data):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
-                # RTA FIX
+                # RTA Fix
                 if k == "RTA" and not value:
                     if cell.has_attr('title'): value = cell['title']
                     else:
@@ -329,40 +300,37 @@ def parse_table_from_soup(soup):
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
 
-        # ID ZOEKEN - DEBUGGING TOEGEVOEGD
-        link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
-        if link_tag:
-            match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
-            if match: 
-                bestelling['ReisId'] = match.group(1)
-                # logging.info(f"ID gevonden via Link voor {bestelling.get('Schip')}: {match.group(1)}")
-        
+        # ID ZOEKEN
         if 'ReisId' not in bestelling and row.has_attr('onclick'):
             onclick_text = row['onclick']
-            # Regex update om value beter te pakken (ook met spaties of quotes)
             match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
-            if match:
-                bestelling['ReisId'] = match.group(1)
-                # logging.info(f"ID gevonden via OnClick voor {bestelling.get('Schip')}: {match.group(1)}")
-            else:
-                logging.warning(f"OnClick gevonden maar geen ID voor {bestelling.get('Schip')}. Text: {onclick_text[:50]}...")
+            if match: bestelling['ReisId'] = match.group(1)
+            
+        # Backup link check
+        if 'ReisId' not in bestelling:
+             link = row.find('a', href=re.compile(r'Reisplan\.aspx'))
+             if link:
+                 match = re.search(r'ReisId=(\d+)', link['href'])
+                 if match: bestelling['ReisId'] = match.group(1)
 
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v72, Verbose Trace) ---")
+    logging.info("--- Running haal_bestellingen_op (v73, PostBack Details) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        
+        # Gewoon de pagina ophalen (Default view, MSC)
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
         
         alle_bestellingen = parse_table_from_soup(soup)
         
-        # Paginering (ingekort voor snelheid, 5 pagina's)
+        # Paginering (kort voor snelheid)
         current_page = 1
-        max_pages = 5
+        max_pages = 10 
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -373,12 +341,14 @@ def haal_bestellingen_op(session):
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
+            
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else: break
+            
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
             new_items = parse_table_from_soup(soup)
@@ -389,58 +359,67 @@ def haal_bestellingen_op(session):
 
         logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
+
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- BEWEGINGEN SCRAPER MET VERBOSE LOGGING ---
-def haal_bewegingen_details(session, reis_id):
-    """Haalt ETA/ATA op van de Bewegingen pagina en LOGT ALLES."""
+# --- NIEUW: FUNCTIE DIE OP HET SCHIP KLIKT VIA POSTBACK ---
+def haal_details_via_postback(session, reis_id):
+    """Simuleert een klik op het schip in de hoofdlijst en leest de Bewegingen tab."""
     if not reis_id: return None
     
-    logging.info(f"DEBUG BEWEGINGEN: Start fetch voor {reis_id}")
-    
     try:
-        url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
-        response = session.get(url, timeout=10)
+        # We moeten eerst de hoofdpagina hebben voor de ViewState
+        # (Dit is zwaar, maar nodig omdat we stateful bezig zijn)
+        base_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        resp = session.get(base_url)
+        soup = BeautifulSoup(resp.content, 'lxml')
         
-        soup = BeautifulSoup(response.content, 'lxml')
+        # Bereid PostBack voor
+        form_data = {}
+        for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
+            tag = soup.find('input', {'name': hidden})
+            if tag: form_data[hidden] = tag.get('value', '')
+            
+        # Dit is de trigger die we in de logs zagen bij onclick:
+        # __doPostBack('ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler','value=559841777;text=');
+        form_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
+        form_data['__EVENTARGUMENT'] = f'value={reis_id};text='
         
-        # Zoek tabel (flexibel)
-        table = None
-        tables = soup.find_all('table')
-        for t in tables:
-            if "Locatie" in t.get_text() and "ETA" in t.get_text():
-                table = t
-                logging.info(f"DEBUG BEWEGINGEN: Tabel gevonden (ID: {t.get('id')})")
-                break
+        # Voer de klik uit
+        post_resp = session.post(base_url, data=form_data)
+        post_soup = BeautifulSoup(post_resp.content, 'lxml')
         
+        # Nu zoeken we de tabel in de response (die zit nu in de pagina geladen)
+        # ID uit jouw screenshot
+        target_table_id = 'ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv'
+        table = post_soup.find('table', id=target_table_id)
+        
+        # Fallback: zoek op tekst als ID faalt
         if not table:
-             logging.warning(f"DEBUG BEWEGINGEN: GEEN geschikte tabel gevonden op pagina!")
-             return None
+             for t in post_soup.find_all('table'):
+                 if "Locatie" in t.get_text() and "ETA" in t.get_text():
+                     table = t
+                     break
         
+        if not table: 
+             return None
+             
+        # Parse de tabel
         target_time = None
         
-        # Headers zoeken
         headers = [th.get_text(strip=True) for th in table.find_all('tr')[0].find_all(['th', 'td'])]
-        
-        idx_loc = -1
-        idx_eta = -1
-        idx_ata = -1
+        idx_loc, idx_eta, idx_ata = -1, -1, -1
         
         for i, h in enumerate(headers):
             if "Locatie" in h: idx_loc = i
             elif "ETA" in h and "RTA" not in h: idx_eta = i
             elif "ATA" in h: idx_ata = i
             
-        if idx_loc == -1 or idx_eta == -1:
-             logging.warning("DEBUG BEWEGINGEN: Kritieke kolommen missen.")
-             return None
+        if idx_loc == -1 or idx_eta == -1: return None
 
-        # Loop door alle rijen en log ze
-        rows = table.find_all('tr')[1:]
-        
-        for row in rows:
+        for row in table.find_all('tr')[1:]:
             cells = row.find_all('td')
             if len(cells) <= max(idx_loc, idx_eta): continue
             
@@ -448,36 +427,25 @@ def haal_bewegingen_details(session, reis_id):
             eta = cells[idx_eta].get_text(strip=True)
             ata = cells[idx_ata].get_text(strip=True) if idx_ata != -1 and len(cells) > idx_ata else ""
             
-            # Log elke rij voor diagnose
-            logging.info(f"DEBUG ROW: Loc='{locatie}', ETA='{eta}', ATA='{ata}'")
-            
-            # Filter op MPET / Deurganckdok
             if "Deurganckdok" in locatie or "MPET" in locatie:
                 tijd = ata if ata else eta
-                if tijd:
-                    target_time = tijd
-                    
+                if tijd: target_time = tijd
+        
         if target_time:
-             # Opschonen
              match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
-             if match: 
-                 res = f"{match.group(1)} {match.group(2)}"
-                 logging.info(f"DEBUG BEWEGINGEN: MATCH GEVONDEN! {res}")
-                 return res
-             logging.info(f"DEBUG BEWEGINGEN: MATCH GEVONDEN (Raw): {target_time}")
+             if match: return f"{match.group(1)} {match.group(2)}"
              return target_time
-
-        logging.info("DEBUG BEWEGINGEN: Geen MPET tijd gevonden in tabel.")
+             
         return None
 
     except Exception as e:
-        logging.error(f"Fout in haal_bewegingen_details {reis_id}: {e}")
+        logging.error(f"Fout in haal_details_via_postback {reis_id}: {e}")
         return None
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
+    brussels_tz = pytz.timezone('Europe/Brussels') 
     
-    # ... tijdgrenzen ...
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
@@ -503,36 +471,47 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     is_mpet_relevant = True
 
             if not is_mpet_relevant: continue
-            
-            # LOG DIT SCHIP OM TE ZIEN OF WE HET ID HEBBEN
-            logging.info(f"MPET Schip gevonden: {b.get('Schip')}. ReisId: {b.get('ReisId', 'GEEN ID!')}")
 
             besteltijd_str_raw = b.get("Besteltijd")
             if not besteltijd_str_raw: continue
 
-            # ... datum logica ...
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
-            # ... timezone ...
-            brussels_tz = pytz.timezone('Europe/Brussels')
             besteltijd_aware = None
             is_sluisplanning = False
-            
+
             if besteltijd_naive.year == 1970:
                 if "sluisplanning" in besteltijd_str_raw.lower(): is_sluisplanning = True
                 else: continue 
             else: besteltijd_aware = brussels_tz.localize(besteltijd_naive)
             
-            # ... status flag ...
             status_flag = "normal" 
+            loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
+            eta_etd_aware = None
+            eta_etd_str = b.get("ETA/ETD")
+            eta_etd_naive = parse_besteltijd(eta_etd_str)
+            if eta_etd_naive.year != 1970: eta_etd_aware = brussels_tz.localize(eta_etd_naive)
+
+            if not loods_toegewezen:
+                tijd_om_te_checken = None
+                if schip_type == "I": 
+                    if not is_sluisplanning: tijd_om_te_checken = besteltijd_aware
+                else: 
+                    if eta_etd_aware: tijd_om_te_checken = eta_etd_aware
+                    elif not is_sluisplanning: tijd_om_te_checken = besteltijd_aware
+
+                if tijd_om_te_checken:
+                    time_diff_seconds = (tijd_om_te_checken - nu).total_seconds()
+                    if time_diff_seconds < 0: status_flag = "past_due" 
+                    elif time_diff_seconds < 3600: status_flag = "warning_soon"
+                    elif time_diff_seconds < 5400: status_flag = "due_soon"
             
             b['status_flag'] = status_flag
-            
-            # ... show_ship logica ...
             show_ship = False
             
             if schip_type == "U":
                 if is_sluisplanning: show_ship = True
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_uit_toekomst): show_ship = True
+                elif eta_etd_aware and (eta_etd_aware > nu): show_ship = True
                 if show_ship: gefilterd["UITGAAND"].append(b)
                     
             elif schip_type == "I": 
@@ -541,10 +520,11 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 if show_ship:
                     b['berekende_eta'] = 'N/A'
                     
-                    # STAP 1: BEWEGINGEN (PRIO)
+                    # STAP 1: BEWEGINGEN VIA POSTBACK (PRIO)
                     reis_id = b.get('ReisId')
                     if reis_id:
-                        tijd_bew = haal_bewegingen_details(session, reis_id)
+                        logging.info(f"Ophalen details voor {b.get('Schip')} ({reis_id})...")
+                        tijd_bew = haal_details_via_postback(session, reis_id)
                         if tijd_bew:
                             b['berekende_eta'] = f"Bewegingen: {tijd_bew}"
                     
