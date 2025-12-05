@@ -303,7 +303,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- NIEUW: PARSE TABEL HELPER MET RTA FIX ---
+# --- PARSE TABEL HELPER ---
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
@@ -315,58 +315,54 @@ def parse_table_from_soup(soup):
         kolom_data = row.find_all('td')
         if not kolom_data: continue
         bestelling = {}
+        
         for k, i in kolom_indices.items():
             if i < len(kolom_data):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
-                
-                # RTA FIX: Als tekst leeg is, zoek naar 'title' attribuut (hover tekst)
+                # RTA FIX
                 if k == "RTA" and not value:
-                    if cell.has_attr('title'):
-                        value = cell['title']
+                    if cell.has_attr('title'): value = cell['title']
                     else:
-                        # Soms zit het in een child element (span, div, img)
-                        child_with_title = cell.find(lambda tag: tag.has_attr('title'))
-                        if child_with_title:
-                            value = child_with_title['title']
-
+                         child = cell.find(lambda tag: tag.has_attr('title'))
+                         if child: value = child['title']
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
+
+        # ID ZOEKEN - DEBUGGING TOEGEVOEGD
+        link_tag = row.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
+        if link_tag:
+            match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
+            if match: 
+                bestelling['ReisId'] = match.group(1)
+                # logging.info(f"ID gevonden via Link voor {bestelling.get('Schip')}: {match.group(1)}")
         
-        # ID ZOEKEN (Link of OnClick - v60 fix)
-        if 11 < len(kolom_data):
-            schip_cel = kolom_data[11]
-            link_tag = schip_cel.find('a', href=re.compile(r'Reisplan\.aspx', re.IGNORECASE))
-            if link_tag:
-                match = re.search(r'ReisId=(\d+)', link_tag['href'], re.IGNORECASE)
-                if match: 
-                    bestelling['ReisId'] = match.group(1)
-            
-        # Fallback naar Onclick
         if 'ReisId' not in bestelling and row.has_attr('onclick'):
             onclick_text = row['onclick']
+            # Regex update om value beter te pakken (ook met spaties of quotes)
             match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
             if match:
                 bestelling['ReisId'] = match.group(1)
+                # logging.info(f"ID gevonden via OnClick voor {bestelling.get('Schip')}: {match.group(1)}")
+            else:
+                logging.warning(f"OnClick gevonden maar geen ID voor {bestelling.get('Schip')}. Text: {onclick_text[:50]}...")
 
         bestellingen.append(bestelling)
     return bestellingen
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v70, Specific Table ID + Fallback) ---")
+    logging.info("--- Running haal_bestellingen_op (v72, Verbose Trace) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        
-        # Gewoon de pagina ophalen. De default view is met 'Eigen reizen' AAN (dus alleen MSC).
         get_response = session.get(base_page_url)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.content, 'lxml')
         
         alle_bestellingen = parse_table_from_soup(soup)
         
-        # Paginering afhandelen
+        # Paginering (ingekort voor snelheid, 5 pagina's)
         current_page = 1
-        max_pages = 10 
+        max_pages = 5
         
         while current_page < max_pages:
             next_page_num = current_page + 1
@@ -377,14 +373,12 @@ def haal_bestellingen_op(session):
             for hidden in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
                 tag = soup.find('input', {'name': hidden})
                 if tag: page_form_data[hidden] = tag.get('value', '')
-            
             href = paging_link['href']
             match = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", href)
             if match:
                 page_form_data['__EVENTTARGET'] = match.group(1)
                 page_form_data['__EVENTARGUMENT'] = match.group(2)
             else: break
-            
             page_response = session.post(base_page_url, data=page_form_data)
             soup = BeautifulSoup(page_response.content, 'lxml')
             new_items = parse_table_from_soup(soup)
@@ -395,36 +389,39 @@ def haal_bestellingen_op(session):
 
         logging.info(f"Totaal {len(alle_bestellingen)} MSC bestellingen opgehaald.")
         return alle_bestellingen
-
     except Exception as e:
         logging.error(f"Error in haal_bestellingen_op: {e}", exc_info=True)
         return []
 
-# --- BEWEGINGEN SCRAPER MET JUISTE ID (v70 FIX) ---
+# --- BEWEGINGEN SCRAPER MET VERBOSE LOGGING ---
 def haal_bewegingen_details(session, reis_id):
-    """Haalt ETA/ATA op van de Bewegingen pagina voor MPET/Deurganckdok."""
+    """Haalt ETA/ATA op van de Bewegingen pagina en LOGT ALLES."""
     if not reis_id: return None
+    
+    logging.info(f"DEBUG BEWEGINGEN: Start fetch voor {reis_id}")
+    
     try:
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
         response = session.get(url, timeout=10)
+        
         soup = BeautifulSoup(response.content, 'lxml')
         
-        # DIT IS HET JUISTE TABEL ID UIT JOUW HTML
-        target_table_id = 'ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv'
+        # Zoek tabel (flexibel)
+        table = None
+        tables = soup.find_all('table')
+        for t in tables:
+            if "Locatie" in t.get_text() and "ETA" in t.get_text():
+                table = t
+                logging.info(f"DEBUG BEWEGINGEN: Tabel gevonden (ID: {t.get('id')})")
+                break
         
-        table = soup.find('table', id=target_table_id)
         if not table:
-             # Fallback: zoek op header tekst (mocht ID ooit wijzigen)
-             for t in soup.find_all('table'):
-                 if "Locatie" in t.get_text() and "ETA" in t.get_text():
-                     table = t
-                     break
-        
-        if not table: return None
+             logging.warning(f"DEBUG BEWEGINGEN: GEEN geschikte tabel gevonden op pagina!")
+             return None
         
         target_time = None
         
-        # Headers zoeken om indexen te bepalen
+        # Headers zoeken
         headers = [th.get_text(strip=True) for th in table.find_all('tr')[0].find_all(['th', 'td'])]
         
         idx_loc = -1
@@ -436,10 +433,14 @@ def haal_bewegingen_details(session, reis_id):
             elif "ETA" in h and "RTA" not in h: idx_eta = i
             elif "ATA" in h: idx_ata = i
             
-        if idx_loc == -1 or idx_eta == -1: return None
+        if idx_loc == -1 or idx_eta == -1:
+             logging.warning("DEBUG BEWEGINGEN: Kritieke kolommen missen.")
+             return None
 
-        # Loop door alle rijen
-        for row in table.find_all('tr')[1:]:
+        # Loop door alle rijen en log ze
+        rows = table.find_all('tr')[1:]
+        
+        for row in rows:
             cells = row.find_all('td')
             if len(cells) <= max(idx_loc, idx_eta): continue
             
@@ -447,29 +448,36 @@ def haal_bewegingen_details(session, reis_id):
             eta = cells[idx_eta].get_text(strip=True)
             ata = cells[idx_ata].get_text(strip=True) if idx_ata != -1 and len(cells) > idx_ata else ""
             
+            # Log elke rij voor diagnose
+            logging.info(f"DEBUG ROW: Loc='{locatie}', ETA='{eta}', ATA='{ata}'")
+            
             # Filter op MPET / Deurganckdok
             if "Deurganckdok" in locatie or "MPET" in locatie:
-                # Prio: ATA (Werkelijk) > ETA (Verwacht)
                 tijd = ata if ata else eta
                 if tijd:
                     target_time = tijd
                     
-        # Formatteren: dd/mm/yyyy HH:MM -> dd/mm HH:MM
         if target_time:
+             # Opschonen
              match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
-             if match: return f"{match.group(1)} {match.group(2)}"
+             if match: 
+                 res = f"{match.group(1)} {match.group(2)}"
+                 logging.info(f"DEBUG BEWEGINGEN: MATCH GEVONDEN! {res}")
+                 return res
+             logging.info(f"DEBUG BEWEGINGEN: MATCH GEVONDEN (Raw): {target_time}")
              return target_time
 
+        logging.info("DEBUG BEWEGINGEN: Geen MPET tijd gevonden in tabel.")
         return None
 
     except Exception as e:
-        logging.error(f"Fout bij ophalen bewegingen voor {reis_id}: {e}")
+        logging.error(f"Fout in haal_bewegingen_details {reis_id}: {e}")
         return None
 
 def filter_snapshot_schepen(bestellingen, session, nu): 
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
-    brussels_tz = pytz.timezone('Europe/Brussels') 
     
+    # ... tijdgrenzen ...
     grens_uit_toekomst = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in_toekomst = nu + timedelta(hours=8)
@@ -495,47 +503,36 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     is_mpet_relevant = True
 
             if not is_mpet_relevant: continue
+            
+            # LOG DIT SCHIP OM TE ZIEN OF WE HET ID HEBBEN
+            logging.info(f"MPET Schip gevonden: {b.get('Schip')}. ReisId: {b.get('ReisId', 'GEEN ID!')}")
 
             besteltijd_str_raw = b.get("Besteltijd")
             if not besteltijd_str_raw: continue
 
+            # ... datum logica ...
             besteltijd_naive = parse_besteltijd(besteltijd_str_raw)
+            # ... timezone ...
+            brussels_tz = pytz.timezone('Europe/Brussels')
             besteltijd_aware = None
             is_sluisplanning = False
-
+            
             if besteltijd_naive.year == 1970:
                 if "sluisplanning" in besteltijd_str_raw.lower(): is_sluisplanning = True
                 else: continue 
             else: besteltijd_aware = brussels_tz.localize(besteltijd_naive)
             
+            # ... status flag ...
             status_flag = "normal" 
-            loods_toegewezen = (b.get('Loods') == 'Loods werd toegewezen')
-            eta_etd_aware = None
-            eta_etd_str = b.get("ETA/ETD")
-            eta_etd_naive = parse_besteltijd(eta_etd_str)
-            if eta_etd_naive.year != 1970: eta_etd_aware = brussels_tz.localize(eta_etd_naive)
-
-            if not loods_toegewezen:
-                tijd_om_te_checken = None
-                if schip_type == "I": 
-                    if not is_sluisplanning: tijd_om_te_checken = besteltijd_aware
-                else: 
-                    if eta_etd_aware: tijd_om_te_checken = eta_etd_aware
-                    elif not is_sluisplanning: tijd_om_te_checken = besteltijd_aware
-
-                if tijd_om_te_checken:
-                    time_diff_seconds = (tijd_om_te_checken - nu).total_seconds()
-                    if time_diff_seconds < 0: status_flag = "past_due" 
-                    elif time_diff_seconds < 3600: status_flag = "warning_soon"
-                    elif time_diff_seconds < 5400: status_flag = "due_soon"
             
             b['status_flag'] = status_flag
+            
+            # ... show_ship logica ...
             show_ship = False
             
             if schip_type == "U":
                 if is_sluisplanning: show_ship = True
                 elif besteltijd_aware and (nu <= besteltijd_aware <= grens_uit_toekomst): show_ship = True
-                elif eta_etd_aware and (eta_etd_aware > nu): show_ship = True
                 if show_ship: gefilterd["UITGAAND"].append(b)
                     
             elif schip_type == "I": 
