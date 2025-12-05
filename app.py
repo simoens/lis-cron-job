@@ -35,6 +35,7 @@ app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # --- CONFIGURATIE ---
+# Database fix voor Render (postgres -> postgresql)
 uri = os.environ.get('DATABASE_URL')
 if uri and uri.startswith("postgres://"):
     uri = uri.replace("postgres://", "postgresql://", 1)
@@ -70,7 +71,7 @@ try:
     with app.app_context():
         db.create_all()
 except Exception as e:
-    print(f"DB Init Warning: {e}", flush=True)
+    logging.warning(f"DB Init Warning: {e}")
 
 # --- HELPER VOOR DIRECT LOGGEN ---
 def log_force(msg):
@@ -117,7 +118,8 @@ def login(session):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         session.headers.update(headers)
-        # TIMEOUT TOEGEVOEGD
+        
+        # 30s Timeout
         get_response = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
         get_response.raise_for_status()
         soup = BeautifulSoup(get_response.text, 'lxml')
@@ -135,7 +137,6 @@ def login(session):
         evt_val = soup.find('input', {'name': '__EVENTVALIDATION'})
         if evt_val: form_data['__EVENTVALIDATION'] = evt_val['value']
             
-        # TIMEOUT TOEGEVOEGD
         login_response = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=form_data, timeout=30)
         login_response.raise_for_status()
         
@@ -149,6 +150,7 @@ def login(session):
         return False
 
 def parse_table_from_soup(soup):
+    """Leest de hoofdtabel en haalt ReisId uit OnClick."""
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if table is None: return []
     
@@ -167,7 +169,7 @@ def parse_table_from_soup(soup):
             if i < len(kolom_data):
                 cell = kolom_data[i]
                 value = cell.get_text(strip=True)
-                if k == "RTA" and not value:
+                if k == "RTA" and not value: # Hover RTA fix
                      if cell.has_attr('title'): value = cell['title']
                      else:
                          child = cell.find(lambda tag: tag.has_attr('title'))
@@ -175,11 +177,13 @@ def parse_table_from_soup(soup):
                 if k == "Loods" and "[Loods]" in value: value = "Loods werd toegewezen"
                 bestelling[k] = value
 
-        # ID ZOEKEN
+        # ID ZOEKEN (OnClick is het meest betrouwbaar gebleken)
         if 'ReisId' not in bestelling and row.has_attr('onclick'):
-            match = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
+            onclick_text = row['onclick']
+            match = re.search(r"value=['\"]?(\d+)['\"]?", onclick_text)
             if match: bestelling['ReisId'] = match.group(1)
         
+        # Fallback: Link
         if 'ReisId' not in bestelling:
              link = row.find('a', href=re.compile(r'Reisplan\.aspx'))
              if link:
@@ -190,19 +194,21 @@ def parse_table_from_soup(soup):
     return bestellingen
 
 def haal_bewegingen_details(session, reis_id):
-    """Haalt ETA/ATA op. Met timeouts."""
+    """Haalt ETA/ATA op van de Bewegingen pagina voor MPET."""
     if not reis_id: return None
     try:
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
+        # Belangrijk: Referer meesturen anders blokkeert LIS soms directe toegang
         session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
         
-        # TIMEOUT TOEGEVOEGD
         response = session.get(url, timeout=20)
         soup = BeautifulSoup(response.content, 'lxml')
         
-        # Probeer op ID
-        table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv')
-        # Fallback
+        # Specifiek ID uit de broncode van de gebruiker
+        target_table_id = 'ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv'
+        table = soup.find('table', id=target_table_id)
+        
+        # Fallback als ID verandert: zoek op headers
         if not table:
              for t in soup.find_all('table'):
                  if "Locatie" in t.get_text() and "ETA" in t.get_text():
@@ -213,6 +219,7 @@ def haal_bewegingen_details(session, reis_id):
         
         target_time = None
         
+        # Kolom indexen bepalen
         headers = [th.get_text(strip=True) for th in table.find_all('tr')[0].find_all(['th', 'td'])]
         idx_loc, idx_eta, idx_ata = -1, -1, -1
         
@@ -223,9 +230,10 @@ def haal_bewegingen_details(session, reis_id):
             
         if idx_loc == -1: return None
 
+        # Rijen scannen
         for row in table.find_all('tr')[1:]:
             cells = row.find_all('td')
-            if len(cells) <= idx_loc: continue
+            if len(cells) <= max(idx_loc, idx_eta): continue
             
             loc = cells[idx_loc].get_text(strip=True)
             
@@ -235,10 +243,12 @@ def haal_bewegingen_details(session, reis_id):
                 val = ata if ata else eta
                 if val: target_time = val
         
+        # Formatteren: dd/mm/yyyy HH:MM -> dd/mm HH:MM
         if target_time:
              match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
              if match: return f"{match.group(1)} {match.group(2)}"
              return target_time
+
         return None
 
     except Exception as e:
@@ -246,7 +256,7 @@ def haal_bewegingen_details(session, reis_id):
         return None
 
 def haal_bestellingen_op(session):
-    log_force("--- Running haal_bestellingen_op (v77, Timeouts & Flush) ---")
+    log_force("--- Running haal_bestellingen_op (v78, Timeouts & Flush) ---")
     try:
         base_page_url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         session.headers.update({'Referer': base_page_url})
@@ -395,27 +405,51 @@ def vergelijk_bestellingen(oude, nieuwe):
 def format_wijzigingen_email(wijzigingen):
     return ""
 
+# --- MAIN FUNCTIE (TERUGGEZET!) ---
 def main():
+    log_force("--- START MAIN ---")
     if not all([USER, PASS]):
         log_force("FATAL: Geen user/pass!")
         return
+    
+    # DB Test
     vorige = load_state_for_comparison()
+    
     session = requests.Session()
     if not login(session):
         log_force("Login mislukt.")
         return
+    
     nieuwe = haal_bestellingen_op(session)
     if not nieuwe:
         log_force("Geen bestellingen opgehaald.")
         return
+    
     log_force("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
     snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
-    s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
-    db.session.add(s)
-    db.session.commit()
+    
+    try:
+        s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
+        db.session.add(s)
+        db.session.commit()
+        log_force("Snapshot saved.")
+    except Exception as e:
+         log_force(f"DB Save Error: {e}")
+         db.session.rollback()
+
     save_state_for_comparison({"bestellingen": nieuwe})
     log_force("--- Run Voltooid ---")
+
+# --- THREAD WRAPPER ---
+def main_task():
+    try:
+        log_force("--- Background task started ---")
+        with app.app_context():
+            main()
+        log_force("--- Background task finished ---")
+    except Exception as e:
+        log_force(f"FATAL ERROR in background thread: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
