@@ -115,16 +115,20 @@ def extract_bewegingen_info(soup):
     """
     target_time = None
     
-    # Zoek alle tabellen
+    # Zoek alle tabellen (flexibel)
     tables = soup.find_all('table')
     target_table = None
     
-    for t in tables:
-        # Check of headers kloppen
-        txt = t.get_text()
-        if "Locatie" in txt and "ETA" in txt and "ATA" in txt:
-            target_table = t
-            break
+    # Probeer eerst op ID (vanuit jouw screenshot)
+    target_table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv')
+    
+    # Fallback op tekst
+    if not target_table:
+        for t in tables:
+            txt = t.get_text()
+            if "Locatie" in txt and "ETA" in txt and "ATA" in txt:
+                target_table = t
+                break
             
     if not target_table:
         return None
@@ -209,7 +213,7 @@ def is_mpet_ship(schip_dict):
     return 'mpet' in e or 'mpet' in x
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v84: Stateful & Bewegingen) ---")
+    logging.info("--- Running haal_bestellingen_op (v85: Tab Switch) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -265,22 +269,45 @@ def haal_bestellingen_op(session):
                 if is_mpet_ship(s) and s.get('ReisId'):
                     logging.info(f"Details ophalen voor {s['Schip']} ({s['ReisId']})...")
                     try:
-                        # PostBack om detail te openen (simuleer klik)
+                        # STAP A: Selecteer schip
                         det_data = get_inputs(soup)
                         det_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
                         det_data['__EVENTARGUMENT'] = f'value={s["ReisId"]};text='
                         
-                        # VERZOEK
-                        resp = session.post(url, data=det_data, timeout=30)
-                        soup = BeautifulSoup(resp.content, 'lxml') # Update onze SOUP!
+                        resp = session.post(url, data=det_data, timeout=20)
+                        soup = BeautifulSoup(resp.content, 'lxml') 
                         
-                        # PARSE DETAILS
-                        eta = extract_bewegingen_info(soup)
-                        if eta:
-                            s['Details_ETA'] = eta
-                            logging.info(f" -> ETA Gevonden: {eta}")
+                        # STAP B: Check of we op tab bewegingen zitten, anders switchen
+                        eta_mpet = extract_bewegingen_info(soup)
+                        
+                        if not eta_mpet:
+                            logging.info(" -> Tabel niet direct gevonden, switch naar Tab 'Bewegingen'...")
+                            # PostBack om naar Tab 2 (Bewegingen) te gaan
+                            # De ID van de TabContainer is: ctl00$ContentPlaceHolder1$ctl01$data$tabContainer
+                            # Index voor bewegingen is meestal 2 (0=Basis, 1=Ligplaats, 2=Bewegingen)
+                            tab_data = get_inputs(soup)
+                            tab_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$data$tabContainer'
+                            # Het argument voor tab switch is het index nummer als string (bij AjaxControlToolkit)
+                            # Soms is het ingewikkelder ("activeTabChanged"), maar vaak werkt index.
+                            # We proberen '2' of de specifieke control naam als we die kunnen vinden.
+                            # Een veilige gok is dat de server dit afhandelt via de __EVENTTARGET.
+                            # Echter, soms moet je op de tab HEADER klikken.
+                            # Laten we proberen de argument leeg te laten en target op de tab header ID te zetten? 
+                            # Nee, TabContainer postbacks zijn tricky.
+                            # Alternatief: We sturen "2" als argument, dat is standaard voor index switch.
+                            tab_data['__EVENTARGUMENT'] = '2' 
+                            
+                            resp = session.post(url, data=tab_data, timeout=20)
+                            soup = BeautifulSoup(resp.content, 'lxml')
+                            
+                            # Opnieuw proberen te lezen
+                            eta_mpet = extract_bewegingen_info(soup)
+
+                        if eta_mpet:
+                            s['Details_ETA'] = eta_mpet
+                            logging.info(f" -> Gevonden: {eta_mpet}")
                         else:
-                            logging.info(" -> Geen bewegingen gevonden.")
+                            logging.info(" -> Geen bewegingen gevonden (ook niet na tab switch).")
                             
                     except Exception as ex:
                         logging.error(f"Detail error: {ex}")
@@ -299,12 +326,13 @@ def haal_bestellingen_op(session):
                 pd['__EVENTTARGET'] = m.group(1)
                 pd['__EVENTARGUMENT'] = m.group(2)
                 resp = session.post(url, data=pd, timeout=30)
-                soup = BeautifulSoup(resp.content, 'lxml') # Update SOUP voor volgende ronde
+                soup = BeautifulSoup(resp.content, 'lxml')
                 page += 1
-            else: break
-            
-        logging.info(f"Totaal {len(all_ships)} schepen gevonden.")
+            else:
+                break
+                
         return all_ships
+
     except Exception as e:
         logging.error(f"Scrape error: {e}")
         return []
@@ -343,7 +371,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                  if rta:
                      m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
                      if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
-                     else: b['berekende_eta'] = f"RTA: {rta}"
+                     else: b['berekende_eta'] = f"RTA: {b['RTA']}"
              
              # 3. Calc
              if b['berekende_eta'] == 'N/A':
@@ -367,10 +395,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-def vergelijk_bestellingen(a, b): return [] # Placeholder
-def format_wijzigingen_email(w): return "" # Placeholder
+def vergelijk_bestellingen(a, b): return []
+def format_wijzigingen_email(w): return ""
 
-# --- MAIN ---
+# --- MAIN FUNCTIE ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
@@ -390,8 +418,8 @@ def main():
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
     snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
     
-    s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
     try:
+        s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
         db.session.add(s)
         db.session.commit()
         with data_lock:
