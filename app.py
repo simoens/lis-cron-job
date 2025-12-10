@@ -68,7 +68,31 @@ try:
 except Exception as e:
     logging.warning(f"DB Init Warning: {e}")
 
-# --- 3. HELPER FUNCTIES & SCRAPERS ---
+# --- 3. DATABASE FUNCTIES (HERSTELD) ---
+def load_state_for_comparison():
+    try:
+        bestellingen_obj = KeyValueStore.query.get('bestellingen')
+        return {"bestellingen": bestellingen_obj.value if bestellingen_obj else []}
+    except Exception as e:
+        logging.error(f"Error loading state: {e}")
+        return {"bestellingen": []}
+
+def save_state_for_comparison(state):
+    try:
+        key = 'bestellingen'
+        value = state.get(key)
+        if value is None: return 
+        obj = KeyValueStore.query.get(key)
+        if obj: 
+            obj.value = value
+        else:
+            obj = KeyValueStore(key=key, value=value)
+            db.session.add(obj)
+    except Exception as e:
+        logging.error(f"Error saving state: {e}")
+        db.session.rollback()
+
+# --- 4. HELPER FUNCTIES & SCRAPERS ---
 
 def parse_besteltijd(besteltijd_str):
     DEFAULT_TIME = datetime(1970, 1, 1) 
@@ -119,18 +143,20 @@ def extract_bewegingen_info(soup):
     tables = soup.find_all('table')
     target_table = None
     
-    # Probeer eerst op ID (vanuit jouw screenshot)
+    # Probeer eerst op ID
     target_table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv')
     
-    # Fallback op tekst
+    # Fallback op tekst (minder strikt dan v85)
     if not target_table:
         for t in tables:
             txt = t.get_text()
-            if "Locatie" in txt and "ETA" in txt and "ATA" in txt:
+            # We eisen minimaal "Locatie" en "ETA". "ATA" is optioneel.
+            if "Locatie" in txt and "ETA" in txt:
                 target_table = t
                 break
             
     if not target_table:
+        logging.info("  -> Geen tabel met 'Locatie' en 'ETA' gevonden.")
         return None
 
     # Bepaal kolom indexen
@@ -144,7 +170,9 @@ def extract_bewegingen_info(soup):
         elif "ETA" in h and "RTA" not in h: idx_eta = i
         elif "ATA" in h: idx_ata = i
         
-    if idx_loc == -1: return None
+    if idx_loc == -1: 
+        logging.info(f"  -> Tabel gevonden maar geen Locatie kolom. Headers: {headers}")
+        return None
 
     # Loop rijen (skip header)
     rows = target_table.find_all('tr')[1:]
@@ -213,7 +241,7 @@ def is_mpet_ship(schip_dict):
     return 'mpet' in e or 'mpet' in x
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v85: Tab Switch) ---")
+    logging.info("--- Running haal_bestellingen_op (v86: Stateful, Fixed Names) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -283,18 +311,8 @@ def haal_bestellingen_op(session):
                         if not eta_mpet:
                             logging.info(" -> Tabel niet direct gevonden, switch naar Tab 'Bewegingen'...")
                             # PostBack om naar Tab 2 (Bewegingen) te gaan
-                            # De ID van de TabContainer is: ctl00$ContentPlaceHolder1$ctl01$data$tabContainer
-                            # Index voor bewegingen is meestal 2 (0=Basis, 1=Ligplaats, 2=Bewegingen)
                             tab_data = get_inputs(soup)
                             tab_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$data$tabContainer'
-                            # Het argument voor tab switch is het index nummer als string (bij AjaxControlToolkit)
-                            # Soms is het ingewikkelder ("activeTabChanged"), maar vaak werkt index.
-                            # We proberen '2' of de specifieke control naam als we die kunnen vinden.
-                            # Een veilige gok is dat de server dit afhandelt via de __EVENTTARGET.
-                            # Echter, soms moet je op de tab HEADER klikken.
-                            # Laten we proberen de argument leeg te laten en target op de tab header ID te zetten? 
-                            # Nee, TabContainer postbacks zijn tricky.
-                            # Alternatief: We sturen "2" als argument, dat is standaard voor index switch.
                             tab_data['__EVENTARGUMENT'] = '2' 
                             
                             resp = session.post(url, data=tab_data, timeout=20)
@@ -318,15 +336,16 @@ def haal_bestellingen_op(session):
             # VOLGENDE PAGINA
             next_page = page + 1
             link = soup.find('a', href=re.compile(f"Page\${next_page}"))
-            if not link: break
-            
+            if not link:
+                break
+                
             pd = get_inputs(soup)
             m = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", link['href'])
             if m:
                 pd['__EVENTTARGET'] = m.group(1)
                 pd['__EVENTARGUMENT'] = m.group(2)
                 resp = session.post(url, data=pd, timeout=30)
-                soup = BeautifulSoup(resp.content, 'lxml')
+                soup = BeautifulSoup(resp.content, 'lxml') # Update SOUP voor volgende ronde
                 page += 1
             else:
                 break
@@ -398,12 +417,14 @@ def filter_snapshot_schepen(bestellingen, session, nu):
 def vergelijk_bestellingen(a, b): return []
 def format_wijzigingen_email(w): return ""
 
-# --- MAIN FUNCTIE ---
+# --- MAIN ---
 def main():
+    logging.info("--- START MAIN ---")
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
         return
     
+    vorige = load_state_for_comparison()
     session = requests.Session()
     if not login(session):
         logging.error("Login mislukt.")
