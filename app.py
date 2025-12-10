@@ -15,8 +15,9 @@ import psycopg2
 from flask_basicauth import BasicAuth
 from werkzeug.middleware.proxy_fix import ProxyFix 
 
-# --- CONFIGURATIE ---
+# --- 1. CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 
@@ -29,8 +30,11 @@ data_lock = threading.Lock()
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+# Database Fix voor Render
 uri = os.environ.get('DATABASE_URL')
-if uri and uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
+if uri and uri.startswith("postgres://"):
+    uri = uri.replace("postgres://", "postgresql://", 1)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
@@ -40,6 +44,7 @@ app.config['BASIC_AUTH_FORCE'] = False
 basic_auth = BasicAuth(app)
 db = SQLAlchemy(app)
 
+# --- 2. MODELLEN ---
 class Snapshot(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
@@ -56,81 +61,77 @@ class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
     value = db.Column(db.JSON)
 
+# Init DB
 try:
-    with app.app_context(): db.create_all()
-except Exception as e: logging.warning(f"DB Init: {e}")
+    with app.app_context():
+        db.create_all()
+except Exception as e:
+    logging.warning(f"DB Init Warning: {e}")
 
-# --- HELPERS ---
-def parse_besteltijd(s):
-    if not s: return datetime(1970,1,1)
-    try: return datetime.strptime(re.sub(r'\s+',' ',s.strip()), "%d/%m/%y %H:%M")
-    except: return datetime(1970,1,1)
+# --- 3. HELPER FUNCTIES & SCRAPERS ---
+
+def parse_besteltijd(besteltijd_str):
+    """Probeert datums te parsen, zowel met 2-cijferig als 4-cijferig jaartal."""
+    DEFAULT_TIME = datetime(1970, 1, 1) 
+    if not besteltijd_str: return DEFAULT_TIME
+    
+    clean_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
+    
+    # Probeer dd/mm/yy HH:MM
+    try:
+        return datetime.strptime(clean_str, "%d/%m/%y %H:%M")
+    except ValueError:
+        pass
+        
+    # Probeer dd/mm/yyyy HH:MM
+    try:
+        return datetime.strptime(clean_str, "%d/%m/%Y %H:%M")
+    except ValueError:
+        pass
+        
+    return DEFAULT_TIME
 
 def login(session):
     try:
-        logging.info("Login...")
+        logging.info("Login attempt started...")
         headers = {"User-Agent": "Mozilla/5.0"}
         session.headers.update(headers)
+        
         r = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
         soup = BeautifulSoup(r.content, 'lxml')
+        
         data = {
-            '__VIEWSTATE': soup.find('input',{'name':'__VIEWSTATE'})['value'],
+            '__VIEWSTATE': soup.find('input', {'name': '__VIEWSTATE'})['value'],
             'ctl00$ContentPlaceHolder1$login$uname': USER,
             'ctl00$ContentPlaceHolder1$login$password': PASS,
             'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
         }
-        if soup.find('input',{'name':'__EVENTVALIDATION'}):
-            data['__EVENTVALIDATION'] = soup.find('input',{'name':'__EVENTVALIDATION'})['value']
+        val = soup.find('input', {'name': '__EVENTVALIDATION'})
+        if val: data['__EVENTVALIDATION'] = val['value']
+            
         r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=data, timeout=30)
-        return "Login.aspx" not in r.url
-    except: return False
-
-def parse_table_from_soup(soup):
-    table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
-    if not table: return []
-    cols = {"Type":0, "Besteltijd":5, "ETA/ETD":6, "RTA":7, "Loods":10, "Schip":11, "Entry Point":20, "Exit Point":21}
-    res = []
-    for row in table.find_all('tr')[1:]:
-        cells = row.find_all('td')
-        if not cells: continue
-        d = {}
-        for k,i in cols.items():
-            if i<len(cells):
-                val = cells[i].get_text(strip=True)
-                if k=="RTA" and not val:
-                    if cells[i].has_attr('title'): val=cells[i]['title']
-                    else: 
-                        c=cells[i].find(lambda t: t.has_attr('title'))
-                        if c: val=c['title']
-                if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
-                d[k]=val
         
-        # ID uit OnClick (De fix die we eerder vonden)
-        if row.has_attr('onclick'):
-            m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
-            if m: d['ReisId'] = m.group(1)
-        # Link fallback
-        if 'ReisId' not in d:
-             l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
-             if l:
-                 m = re.search(r'ReisId=(\d+)', l['href'])
-                 if m: d['ReisId'] = m.group(1)
-        res.append(d)
-    return res
+        if "Login.aspx" not in r.url:
+            logging.info("LOGIN SUCCESSFUL!")
+            return True
+        logging.error("Login failed.")
+        return False
+    except Exception as e:
+        logging.error(f"Error during login: {e}")
+        return False
 
+# --- DE KERN: BEWEGINGEN UITLEZEN ---
 def haal_bewegingen_direct(session, reis_id):
-    """Haalt ETA/ATA op via directe GET naar Bewegingen.aspx (Veiliger voor loops)"""
+    """Haalt ETA/ATA op via directe GET naar Bewegingen.aspx"""
     if not reis_id: return None
     try:
-        # Directe URL naar details
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
-        # Referer is belangrijk voor ASP.NET sessie
         session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
         
         r = session.get(url, timeout=20)
         soup = BeautifulSoup(r.content, 'lxml')
         
-        # Tabel zoeken (kan ID hebben of generiek zijn)
+        # Tabel zoeken
         table = soup.find('table', id='ctl00_ContentPlaceHolder1_gridMovements')
         if not table:
              for t in soup.find_all('table'):
@@ -161,15 +162,51 @@ def haal_bewegingen_direct(session, reis_id):
                 if val: target_time = val
                 
         if target_time:
-            m = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
+            # Flexibele regex voor tijd extractie (zowel yy als yyyy)
+            m = re.search(r"(\d{2}/\d{2})/(?:\d{4}|\d{2})\s+(\d{2}:\d{2})", target_time)
             if m: return f"{m.group(1)} {m.group(2)}"
             return target_time
             
     except: pass
     return None
 
+def parse_table_from_soup(soup):
+    table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
+    if not table: return []
+    
+    cols = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
+    res = []
+    
+    for row in table.find_all('tr')[1:]: 
+        cells = row.find_all('td')
+        if not cells: continue
+        d = {}
+        for k, i in cols.items():
+            if i < len(cells):
+                val = cells[i].get_text(strip=True)
+                if k == "RTA" and not val:
+                    if cells[i].has_attr('title'): val = cells[i]['title']
+                    else:
+                        c = cells[i].find(lambda t: t.has_attr('title'))
+                        if c: val = c['title']
+                if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
+                d[k] = val
+        
+        # ID FIX
+        if row.has_attr('onclick'):
+            m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
+            if m: d['ReisId'] = m.group(1)
+        if 'ReisId' not in d:
+             l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
+             if l:
+                 m = re.search(r'ReisId=(\d+)', l['href'])
+                 if m: d['ReisId'] = m.group(1)
+        
+        res.append(d)
+    return res
+
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v89: Direct Detail GET) ---")
+    logging.info("--- Running haal_bestellingen_op (v90: Robust Parsing) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         r = session.get(url, timeout=30)
@@ -212,7 +249,6 @@ def is_mpet_ship(schip_dict):
 def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
-    # Tijdsgrenzen
     grens_uit = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in = nu + timedelta(hours=8)
@@ -224,8 +260,14 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         stype = b.get("Type")
         besteltijd_str = b.get('Besteltijd')
+        
+        # Datum parse poging
         try:
-            bt = datetime.strptime(re.sub(r'\s+', ' ', besteltijd_str), "%d/%m/%y %H:%M")
+            bt = parse_besteltijd(besteltijd_str)
+            if bt.year == 1970:
+                # Als datum faalt, probeer VANDAAG te gokken uit de string als die 'uu:mm' is?
+                # Nee, we skippen als we geen datum hebben.
+                continue
             bt = pytz.timezone('Europe/Brussels').localize(bt)
         except: continue
         
@@ -233,22 +275,29 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         # INKOMEND: ETA BEPALEN
         if stype == 'I':
-            if grens_in_verleden <= bt <= grens_in:
-                # 1. Directe Detail Fetch (Uniek per schip, geen state conflict)
+             if grens_in_verleden <= bt <= grens_in:
+                # 1. Directe Detail Fetch
                 rid = b.get('ReisId')
                 if rid:
-                    # Korte pauze tegen flooding
                     time.sleep(0.2) 
                     t = haal_bewegingen_direct(session, rid)
                     if t: b['berekende_eta'] = f"Bewegingen: {t}"
                 
-                # 2. Fallback
+                # 2. Fallback RTA (Nu veel losser!)
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
-                        m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
-                        if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
-                        else: b['berekende_eta'] = f"RTA: {rta}"
+                        # Zoek gewoon naar het EERSTE tijdspatroon (dd/mm uu:mm) in de tekst
+                        m = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta)
+                        if m: 
+                            # Check of er SA/ZV of CP voor stond voor de leuk
+                            if "SA/ZV" in rta or "CP" in rta:
+                                b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
+                            else:
+                                b['berekende_eta'] = f"RTA: {m.group(1)}"
+                        else:
+                            # Als geen tijdspatroon, toon gewoon de tekst
+                             b['berekende_eta'] = f"RTA: {rta[:20]}"
                 
                 # 3. Calc
                 if b['berekende_eta'] == 'N/A':
@@ -276,6 +325,7 @@ def save_state_for_comparison(s): pass
 def vergelijk_bestellingen(a, b): return []
 def format_wijzigingen_email(w): return ""
 
+# --- MAIN ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
