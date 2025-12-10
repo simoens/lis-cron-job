@@ -107,6 +107,67 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
+# --- DE KERN: BEWEGINGEN UITLEZEN ---
+def extract_bewegingen_info(soup):
+    """
+    Zoekt in de HTML naar een tabel met 'Locatie' en 'ETA'.
+    Retourneert de laatste (onderste) tijd voor MPET/Deurganckdok.
+    """
+    target_time = None
+    
+    # Zoek alle tabellen
+    tables = soup.find_all('table')
+    target_table = None
+    
+    for t in tables:
+        # Check of headers kloppen
+        txt = t.get_text()
+        if "Locatie" in txt and "ETA" in txt and "ATA" in txt:
+            target_table = t
+            break
+            
+    if not target_table:
+        return None
+
+    # Bepaal kolom indexen
+    headers = [th.get_text(strip=True) for th in target_table.find_all('tr')[0].find_all(['th', 'td'])]
+    idx_loc = -1
+    idx_eta = -1
+    idx_ata = -1
+    
+    for i, h in enumerate(headers):
+        if "Locatie" in h: idx_loc = i
+        elif "ETA" in h and "RTA" not in h: idx_eta = i
+        elif "ATA" in h: idx_ata = i
+        
+    if idx_loc == -1: return None
+
+    # Loop rijen (skip header)
+    rows = target_table.find_all('tr')[1:]
+    for row in rows:
+        cells = row.find_all('td')
+        if len(cells) <= max(idx_loc, idx_eta): continue
+        
+        loc = cells[idx_loc].get_text(strip=True)
+        
+        # Check MPET
+        if "Deurganckdok" in loc or "MPET" in loc:
+            eta = cells[idx_eta].get_text(strip=True) if idx_eta > -1 else ""
+            ata = cells[idx_ata].get_text(strip=True) if idx_ata > -1 else ""
+            
+            # Prio: ATA > ETA
+            val = ata if ata else eta
+            if val:
+                target_time = val # Overschrijf, want we willen de laatste (onderste)
+                
+    # Schoonmaak (datum/tijd filteren)
+    if target_time:
+        match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
+        if match: return f"{match.group(1)} {match.group(2)}"
+        return target_time
+        
+    return None
+
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if not table: return []
@@ -129,11 +190,10 @@ def parse_table_from_soup(soup):
                 if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
                 d[k] = val
         
-        # ID via OnClick (Betrouwbaarste methode)
+        # ID FIX: Onclick + Link fallback
         if row.has_attr('onclick'):
             m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
             if m: d['ReisId'] = m.group(1)
-        # ID via Link (Fallback)
         if 'ReisId' not in d:
              l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
              if l:
@@ -143,92 +203,111 @@ def parse_table_from_soup(soup):
         res.append(d)
     return res
 
-def haal_bewegingen_details(session, reis_id):
-    """Haalt ETA/ATA op van de Bewegingen pagina."""
-    if not reis_id: return None
-    try:
-        url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
-        session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
-        r = session.get(url, timeout=15)
-        soup = BeautifulSoup(r.content, 'lxml')
-        
-        table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv')
-        if not table:
-             for t in soup.find_all('table'):
-                 if "Locatie" in t.get_text() and "ETA" in t.get_text():
-                     table = t; break
-        
-        if not table: return None
-        
-        headers = [c.get_text(strip=True) for c in table.find_all('tr')[0].find_all(['th','td'])]
-        ix_loc = -1; ix_eta = -1; ix_ata = -1
-        for i, h in enumerate(headers):
-            if "Locatie" in h: ix_loc = i
-            elif "ETA" in h: ix_eta = i
-            elif "ATA" in h: ix_ata = i
-            
-        if ix_loc == -1: return None
-        
-        target = None
-        for row in table.find_all('tr')[1:]:
-            cells = row.find_all('td')
-            if len(cells) <= ix_loc: continue
-            loc = cells[ix_loc].get_text(strip=True)
-            
-            if "Deurganckdok" in loc or "MPET" in loc:
-                eta = cells[ix_eta].get_text(strip=True) if ix_eta > -1 else ""
-                ata = cells[ix_ata].get_text(strip=True) if ix_ata > -1 else ""
-                val = ata if ata else eta
-                if val: target = val
-                
-        if target:
-            m = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target)
-            if m: return f"{m.group(1)} {m.group(2)}"
-            return target
-            
-    except: pass
-    return None
-
-def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v83) ---")
-    try:
-        # Default view (MSC)
-        r = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx", timeout=30)
-        soup = BeautifulSoup(r.content, 'lxml')
-        items = parse_table_from_soup(soup)
-        
-        # Paging (max 5)
-        page = 1
-        while page < 5:
-            page += 1
-            link = soup.find('a', href=re.compile(f"Page\${page}"))
-            if not link: break
-            
-            logging.info(f"Paginering: {page}")
-            fdata = {}
-            for h in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
-                tag = soup.find('input', {'name': h})
-                if tag: fdata[h] = tag.get('value', '')
-            
-            m = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", link['href'])
-            if m:
-                fdata['__EVENTTARGET'] = m.group(1)
-                fdata['__EVENTARGUMENT'] = m.group(2)
-                r = session.post("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx", data=fdata, timeout=30)
-                soup = BeautifulSoup(r.content, 'lxml')
-                items.extend(parse_table_from_soup(soup))
-            else: break
-            
-        logging.info(f"Totaal {len(items)} schepen.")
-        return items
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        return []
-
 def is_mpet_ship(schip_dict):
     e = schip_dict.get('Entry Point', '').lower()
     x = schip_dict.get('Exit Point', '').lower()
     return 'mpet' in e or 'mpet' in x
+
+def haal_bestellingen_op(session):
+    logging.info("--- Running haal_bestellingen_op (v84: Stateful & Bewegingen) ---")
+    try:
+        url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+        
+        # 1. Start: GET pagina
+        resp = session.get(url, timeout=30)
+        soup = BeautifulSoup(resp.content, 'lxml')
+        
+        # Helper
+        def get_inputs(s):
+            d = {}
+            for i in s.find_all('input'):
+                if i.get('name'): d[i['name']] = i.get('value', '')
+            if 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$betrokken']
+            return d
+
+        # 2. STAP 1: Vinkje uit (PostBack)
+        logging.info("Uncheck Eigen Reizen...")
+        d = get_inputs(soup)
+        d['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
+        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        
+        resp = session.post(url, data=d, timeout=30)
+        soup = BeautifulSoup(resp.content, 'lxml')
+        time.sleep(1)
+        
+        # 3. STAP 2: Zoeken (PostBack)
+        logging.info("Zoeken...")
+        d = get_inputs(soup)
+        d['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
+        d['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
+        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
+        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
+        if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
+        d['__EVENTTARGET'] = ''
+        
+        resp = session.post(url, data=d, timeout=30)
+        soup = BeautifulSoup(resp.content, 'lxml')
+        
+        # 4. LOOP PAGINA'S & HAAL DETAILS OP (STATEFUL!)
+        all_ships = []
+        page = 1
+        max_pages = 10
+        
+        while page <= max_pages:
+            logging.info(f"Verwerken pagina {page}...")
+            
+            # Lees lijst van huidige pagina
+            current_ships = parse_table_from_soup(soup)
+            
+            # VOOR ELK MPET SCHIP OP DEZE PAGINA: HAAL DETAILS
+            for s in current_ships:
+                if is_mpet_ship(s) and s.get('ReisId'):
+                    logging.info(f"Details ophalen voor {s['Schip']} ({s['ReisId']})...")
+                    try:
+                        # PostBack om detail te openen (simuleer klik)
+                        det_data = get_inputs(soup)
+                        det_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
+                        det_data['__EVENTARGUMENT'] = f'value={s["ReisId"]};text='
+                        
+                        # VERZOEK
+                        resp = session.post(url, data=det_data, timeout=30)
+                        soup = BeautifulSoup(resp.content, 'lxml') # Update onze SOUP!
+                        
+                        # PARSE DETAILS
+                        eta = extract_bewegingen_info(soup)
+                        if eta:
+                            s['Details_ETA'] = eta
+                            logging.info(f" -> ETA Gevonden: {eta}")
+                        else:
+                            logging.info(" -> Geen bewegingen gevonden.")
+                            
+                    except Exception as ex:
+                        logging.error(f"Detail error: {ex}")
+
+            # Voeg schepen toe (nu verrijkt met details)
+            all_ships.extend(current_ships)
+            
+            # VOLGENDE PAGINA
+            next_page = page + 1
+            link = soup.find('a', href=re.compile(f"Page\${next_page}"))
+            if not link: break
+            
+            pd = get_inputs(soup)
+            m = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", link['href'])
+            if m:
+                pd['__EVENTTARGET'] = m.group(1)
+                pd['__EVENTARGUMENT'] = m.group(2)
+                resp = session.post(url, data=pd, timeout=30)
+                soup = BeautifulSoup(resp.content, 'lxml') # Update SOUP voor volgende ronde
+                page += 1
+            else: break
+            
+        logging.info(f"Totaal {len(all_ships)} schepen gevonden.")
+        return all_ships
+    except Exception as e:
+        logging.error(f"Scrape error: {e}")
+        return []
 
 def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
@@ -240,6 +319,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     grens_verplaatsing = nu + timedelta(hours=8)
     
     for b in bestellingen:
+        # MPET Filter
         if not is_mpet_ship(b): continue
         
         stype = b.get("Type")
@@ -250,74 +330,68 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         except: continue
         
         b['berekende_eta'] = 'N/A'
-        in_window = False
         
+        # INKOMEND: ETA BEPALEN
         if stype == 'I':
-            if grens_in_verleden <= bt <= grens_in:
-                in_window = True
-                # 1. Bewegingen
-                rid = b.get('ReisId')
-                if rid:
-                    time.sleep(0.5) # Pauze voor server
-                    t = haal_bewegingen_details(session, rid)
-                    if t: b['berekende_eta'] = f"Bewegingen: {t}"
-                # 2. RTA
-                if b['berekende_eta'] == 'N/A':
-                    rta = b.get('RTA', '').strip()
-                    if rta:
-                        m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
-                        if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
-                        else: b['berekende_eta'] = f"RTA: {rta}"
-                # 3. Calc
-                if b['berekende_eta'] == 'N/A':
-                     eta = bt + timedelta(hours=6)
-                     b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
-        
+             # 1. Bewezen ETA (uit scraper)
+             if 'Details_ETA' in b:
+                 b['berekende_eta'] = f"Bewegingen: {b['Details_ETA']}"
+             
+             # 2. Fallback RTA
+             if b['berekende_eta'] == 'N/A':
+                 rta = b.get('RTA', '').strip()
+                 if rta:
+                     m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
+                     if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
+                     else: b['berekende_eta'] = f"RTA: {rta}"
+             
+             # 3. Calc
+             if b['berekende_eta'] == 'N/A':
+                  eta = bt + timedelta(hours=6)
+                  b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
+             
+             if grens_in_verleden <= bt <= grens_in: gefilterd['INKOMEND'].append(b)
+                 
         elif stype == 'U':
-            if nu <= bt <= grens_uit: in_window = True
+             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
         elif stype == 'V':
-            if nu <= bt <= grens_verplaatsing: in_window = True
-
-        # Status
+             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
+             
+        # Status logic
         b['status_flag'] = 'normal'
         diff = (bt - nu).total_seconds()
         if diff < 0: b['status_flag'] = 'past_due'
         elif diff < 3600: b['status_flag'] = 'warning_soon'
         elif diff < 5400: b['status_flag'] = 'due_soon'
 
-        if in_window:
-            if stype == 'I': gefilterd['INKOMEND'].append(b)
-            elif stype == 'U': gefilterd['UITGAAND'].append(b)
-            elif stype == 'V': gefilterd['VERPLAATSING'].append(b)
-
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-def load_state(): return {} 
-def save_state(s): pass 
-def vergelijk_bestellingen(a, b): return []
-def format_wijzigingen_email(w): return ""
+def vergelijk_bestellingen(a, b): return [] # Placeholder
+def format_wijzigingen_email(w): return "" # Placeholder
 
-# --- 4. CORE LOGICA & THREAD WRAPPER ---
+# --- MAIN ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
         return
+    
     session = requests.Session()
     if not login(session):
         logging.error("Login mislukt.")
         return
-    data = haal_bestellingen_op(session)
-    if not data:
+    
+    nieuwe = haal_bestellingen_op(session)
+    if not nieuwe:
         logging.error("Geen bestellingen.")
         return
     
     logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
-    snapshot_data = filter_snapshot_schepen(data, session, nu)
+    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
     
+    s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
     try:
-        s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
         db.session.add(s)
         db.session.commit()
         with data_lock:
@@ -330,10 +404,13 @@ def main():
          logging.error(f"DB Error: {e}")
          db.session.rollback()
 
+    save_state_for_comparison({"bestellingen": nieuwe})
+    logging.info("--- Run Voltooid ---")
+
 def main_task():
     with app.app_context(): main()
 
-# --- 5. ROUTES (MOETEN ONDERAAN STAAN) ---
+# --- ROUTES ---
 @app.route('/')
 @basic_auth.required 
 def home():
