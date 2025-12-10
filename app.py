@@ -134,6 +134,7 @@ def parse_table_from_soup(soup):
                 d[k] = val
         
         # ID FIX: Onclick + Link fallback
+        # Dit is essentieel om de detailpagina te kunnen openen!
         if row.has_attr('onclick'):
             m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
             if m: d['ReisId'] = m.group(1)
@@ -146,59 +147,80 @@ def parse_table_from_soup(soup):
         res.append(d)
     return res
 
+# --- NIEUWE FUNCTIE: HAAL BEWEGINGEN DETAILS ---
 def haal_bewegingen_details(session, reis_id):
-    """Haalt de tabel Bewegingen op voor MPET-tijden."""
+    """Haalt ETA/ATA op van de Bewegingen pagina voor MPET/Deurganckdok."""
     if not reis_id: return None
     try:
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
         session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
-        r = session.get(url, timeout=15)
-        soup = BeautifulSoup(r.content, 'lxml')
         
-        # Zoek tabel
-        table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv')
+        # Korte timeout om ophoping te voorkomen
+        response = session.get(url, timeout=10)
+        soup = BeautifulSoup(response.content, 'lxml')
+        
+        # We zoeken specifiek naar de tabel in de 'Bewegingen' tab
+        target_table_id = 'ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv'
+        table = soup.find('table', id=target_table_id)
+        
+        # Fallback: zoek op headers als ID ooit verandert
         if not table:
-             # Fallback
              for t in soup.find_all('table'):
                  if "Locatie" in t.get_text() and "ETA" in t.get_text():
-                     table = t; break
+                     table = t
+                     break
         
         if not table: return None
         
-        # Indexen
-        headers = [c.get_text(strip=True) for c in table.find_all('tr')[0].find_all(['th','td'])]
-        ix_loc, ix_eta, ix_ata = -1, -1, -1
-        for i, h in enumerate(headers):
-            if "Locatie" in h: ix_loc = i
-            elif "ETA" in h: ix_eta = i
-            elif "ATA" in h: ix_ata = i
-            
-        if ix_loc == -1: return None
+        target_time = None
         
-        target = None
+        # Kolom indexen bepalen (voor veiligheid)
+        # Meestal: Locatie(0), ETA(1), RTA(2), ATA(3)
+        headers = [th.get_text(strip=True) for th in table.find_all('tr')[0].find_all(['th', 'td'])]
+        idx_loc, idx_eta, idx_ata = -1, -1, -1
+        
+        for i, h in enumerate(headers):
+            if "Locatie" in h: idx_loc = i
+            elif "ETA" in h and "RTA" not in h: idx_eta = i
+            elif "ATA" in h: idx_ata = i
+            
+        if idx_loc == -1: return None
+
+        # Loop door alle rijen
         for row in table.find_all('tr')[1:]:
             cells = row.find_all('td')
-            if len(cells) <= ix_loc: continue
-            loc = cells[ix_loc].get_text(strip=True)
+            if len(cells) <= max(idx_loc, idx_eta): continue
             
-            if "Deurganckdok" in loc or "MPET" in loc:
-                eta = cells[ix_eta].get_text(strip=True) if ix_eta > -1 else ""
-                ata = cells[ix_ata].get_text(strip=True) if ix_ata > -1 else ""
-                val = ata if ata else eta
-                if val: target = val
-                
-        if target:
-            m = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target)
-            if m: return f"{m.group(1)} {m.group(2)}"
-            return target
+            locatie = cells[idx_loc].get_text(strip=True)
+            eta = cells[idx_eta].get_text(strip=True)
+            ata = cells[idx_ata].get_text(strip=True) if idx_ata != -1 and len(cells) > idx_ata else ""
             
-    except: pass
-    return None
+            # Filter op MPET / Deurganckdok
+            if "Deurganckdok" in locatie or "MPET" in locatie:
+                # Prio: ATA (Werkelijk) > ETA (Verwacht)
+                # Omdat we de lus doorlopen, overschrijven we target_time.
+                # De LAATSTE rij die matcht is meestal de aankomst bij MPET (ipv passage).
+                tijd = ata if ata else eta
+                if tijd:
+                    target_time = tijd
+                    
+        # Formatteren: dd/mm/yyyy HH:MM -> dd/mm HH:MM
+        if target_time:
+             match = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", target_time)
+             if match: return f"{match.group(1)} {match.group(2)}"
+             return target_time
+
+        return None
+
+    except Exception as e:
+        logging.warning(f"Kon bewegingen niet ophalen voor {reis_id}: {e}")
+        return None
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v82: Stable MSC + Time Filters) ---")
+    logging.info("--- Running haal_bestellingen_op (v81: Stable + Details) ---")
     try:
         # Gewoon de pagina ophalen (Default View = MSC Eigen reizen)
+        # Geen filters manipuleren om crashes te voorkomen
         r = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx", timeout=30)
         soup = BeautifulSoup(r.content, 'lxml')
         
@@ -226,16 +248,16 @@ def haal_bestellingen_op(session):
                 items.extend(parse_table_from_soup(soup))
             else: break
             
-        logging.info(f"Totaal {len(items)} schepen.")
+        logging.info(f"Totaal {len(items)} schepen gevonden.")
         return items
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Scrape error: {e}")
         return []
 
 def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
-    # Tijdsgrenzen (strikte filtering)
+    # Tijdsgrenzen
     grens_uit = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in = nu + timedelta(hours=8)
@@ -248,29 +270,27 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         if 'mpet' not in e and 'mpet' not in x: continue
         
         stype = b.get("Type")
-        besteltijd_str = b.get('Besteltijd')
         
-        # Parse Tijd
+        # --- TIJD PARSEN ---
+        besteltijd_str = b.get('Besteltijd')
         try:
             bt = datetime.strptime(re.sub(r'\s+', ' ', besteltijd_str), "%d/%m/%y %H:%M")
             bt = pytz.timezone('Europe/Brussels').localize(bt)
         except: 
-            # Als tijd niet geparst kan worden, skip (of voeg toe als 'unknown' indien gewenst)
-            continue
-        
-        # --- ETA LOGICA (ALLEEN INDIEN NODIG) ---
-        # We halen alleen details op als het schip BINNEN het tijdvenster valt,
-        # dat spaart de server.
+            continue # Sla over als geen geldige tijd
+            
+        # --- ETA BEREKENING ---
         b['berekende_eta'] = 'N/A'
-        in_time_window = False
         
+        # INKOMEND: Haal details op!
         if stype == 'I':
+            # Check datum bereik
             if grens_in_verleden <= bt <= grens_in:
-                in_time_window = True
-                
-                # 1. Probeer Bewegingen
+                # 1. Probeer Bewegingen (Nieuw in v81)
                 rid = b.get('ReisId')
                 if rid:
+                    # Kleine pauze om server niet te overbelasten
+                    time.sleep(0.5) 
                     tijd = haal_bewegingen_details(session, rid)
                     if tijd: b['berekende_eta'] = f"Bewegingen: {tijd}"
                 
@@ -284,29 +304,22 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                 
                 # 3. Calc
                 if b['berekende_eta'] == 'N/A':
-                    calc_eta = bt + timedelta(hours=6)
-                    b['berekende_eta'] = f"Calculated: {calc_eta.strftime('%d/%m/%y %H:%M')}"
-
-        elif stype == 'U':
-            if nu <= bt <= grens_uit:
-                in_time_window = True
+                    eta = bt + timedelta(hours=6)
+                    b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
                 
+                gefilterd['INKOMEND'].append(b)
+                 
+        elif stype == 'U':
+             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
         elif stype == 'V':
-            if nu <= bt <= grens_verplaatsing:
-                in_time_window = True
-
-        # Status logic
+             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
+        
+        # Status (Simpel gehouden)
         b['status_flag'] = 'normal'
         diff = (bt - nu).total_seconds()
         if diff < 0: b['status_flag'] = 'past_due'
         elif diff < 3600: b['status_flag'] = 'warning_soon'
         elif diff < 5400: b['status_flag'] = 'due_soon'
-
-        # Toevoegen aan lijst
-        if in_time_window:
-            if stype == 'I': gefilterd['INKOMEND'].append(b)
-            elif stype == 'U': gefilterd['UITGAAND'].append(b)
-            elif stype == 'V': gefilterd['VERPLAATSING'].append(b)
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
@@ -316,29 +329,30 @@ def format_wijzigingen_email(w): return "" # Placeholder
 def load_state(): return {} # Placeholder
 def save_state(s): pass # Placeholder
 
-# --- MAIN LOGICA ---
+# --- MAIN ---
 def main():
-    logging.info("--- START MAIN ---")
     if not all([USER, PASS]):
-        logging.error("Geen inloggegevens!")
+        logging.critical("FATAL: Geen user/pass!")
         return
-        
+    
     session = requests.Session()
-    if not login(session): return
+    if not login(session):
+        logging.error("Login mislukt.")
+        return
     
-    data = haal_bestellingen_op(session)
-    if not data: return
+    nieuwe = haal_bestellingen_op(session)
+    if not nieuwe:
+        logging.error("Geen bestellingen.")
+        return
     
+    logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
-    snapshot_data = filter_snapshot_schepen(data, session, nu)
+    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
     
-    # Save DB
+    s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
     try:
-        s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
         db.session.add(s)
         db.session.commit()
-        
-        # Update Memory
         with data_lock:
              app_state["latest_snapshot"] = {
                 "timestamp": nu.strftime('%d-%m-%Y %H:%M:%S'),
@@ -346,54 +360,13 @@ def main():
             }
         logging.info("Snapshot opgeslagen.")
     except Exception as e:
-        logging.error(f"DB Error: {e}")
-        db.session.rollback()
+         logging.error(f"DB Error: {e}")
+         db.session.rollback()
 
-    save_state_for_comparison({"bestellingen": data})
+    save_state_for_comparison({"bestellingen": nieuwe})
     logging.info("--- Run Voltooid ---")
 
-# --- ROUTES ---
-
-@app.route('/')
-@basic_auth.required 
-def home():
-    if app_state["latest_snapshot"]["timestamp"] == "Nog niet uitgevoerd":
-        try:
-            s = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-            if s:
-                 app_state["latest_snapshot"] = {
-                    "timestamp": pytz.utc.localize(s.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                    "content_data": s.content_data
-                }
-        except: pass
-        
-    return render_template('index.html', snapshot=app_state["latest_snapshot"], changes=[], secret_key=os.environ.get('SECRET_KEY'))
-
-@app.route('/force-snapshot', methods=['POST'])
-@basic_auth.required
-def force_snapshot_route():
-    if request.form.get('secret') != os.environ.get('SECRET_KEY'): return jsonify({}), 403
-    threading.Thread(target=main_task).start()
-    return jsonify({"status": "started"})
-
-@app.route('/trigger-run')
-def trigger_run():
-    if request.args.get('secret') != os.environ.get('SECRET_KEY'): abort(403)
-    threading.Thread(target=main_task).start()
-    return "OK", 200
-
-@app.route('/status')
-def status_check():
-    return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
-
-@app.route('/logboek')
-@basic_auth.required
-def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
-
-@app.route('/statistieken')
-@basic_auth.required
-def statistieken(): return render_template('statistieken.html', stats={}, secret_key=os.environ.get('SECRET_KEY'))
-
+# Thread wrapper
 def main_task():
     with app.app_context(): main()
 
