@@ -196,7 +196,7 @@ def haal_bewegingen_details(session, reis_id):
     return None
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v81: Stable MSC) ---")
+    logging.info("--- Running haal_bestellingen_op (v82: Stable MSC + Time Filters) ---")
     try:
         # Gewoon de pagina ophalen (Default View = MSC Eigen reizen)
         r = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx", timeout=30)
@@ -235,8 +235,11 @@ def haal_bestellingen_op(session):
 def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
-    # Tijdsgrenzen (optioneel, nu ruim ingesteld)
-    # ... (kan je aanpassen indien nodig) ...
+    # Tijdsgrenzen (strikte filtering)
+    grens_uit = nu + timedelta(hours=16)
+    grens_in_verleden = nu - timedelta(hours=8)
+    grens_in = nu + timedelta(hours=8)
+    grens_verplaatsing = nu + timedelta(hours=8)
     
     for b in bestellingen:
         # MPET Filter
@@ -245,39 +248,65 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         if 'mpet' not in e and 'mpet' not in x: continue
         
         stype = b.get("Type")
+        besteltijd_str = b.get('Besteltijd')
+        
+        # Parse Tijd
+        try:
+            bt = datetime.strptime(re.sub(r'\s+', ' ', besteltijd_str), "%d/%m/%y %H:%M")
+            bt = pytz.timezone('Europe/Brussels').localize(bt)
+        except: 
+            # Als tijd niet geparst kan worden, skip (of voeg toe als 'unknown' indien gewenst)
+            continue
+        
+        # --- ETA LOGICA (ALLEEN INDIEN NODIG) ---
+        # We halen alleen details op als het schip BINNEN het tijdvenster valt,
+        # dat spaart de server.
         b['berekende_eta'] = 'N/A'
+        in_time_window = False
         
-        # Logica voor inkomend
         if stype == 'I':
-            # 1. Bewegingen
-            rid = b.get('ReisId')
-            if rid:
-                t = haal_bewegingen_details(session, rid)
-                if t: b['berekende_eta'] = f"Bewegingen: {t}"
-            
-            # 2. Fallback RTA
-            if b['berekende_eta'] == 'N/A':
-                 rta = b.get('RTA', '').strip()
-                 if rta:
-                     m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
-                     if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
-                     else: b['berekende_eta'] = f"RTA: {rta}"
-            
-            # 3. Calc
-            if b['berekende_eta'] == 'N/A':
-                 try:
-                     bt = datetime.strptime(re.sub(r'\s+', ' ', b['Besteltijd']), "%d/%m/%y %H:%M")
-                     bt_dt = pytz.timezone('Europe/Brussels').localize(bt) + timedelta(hours=6)
-                     b['berekende_eta'] = f"Calculated: {bt_dt.strftime('%d/%m/%y %H:%M')}"
-                 except: pass
-        
-        # Status (Simple)
-        b['status_flag'] = 'normal'
+            if grens_in_verleden <= bt <= grens_in:
+                in_time_window = True
+                
+                # 1. Probeer Bewegingen
+                rid = b.get('ReisId')
+                if rid:
+                    tijd = haal_bewegingen_details(session, rid)
+                    if tijd: b['berekende_eta'] = f"Bewegingen: {tijd}"
+                
+                # 2. Fallback RTA
+                if b['berekende_eta'] == 'N/A':
+                    rta = b.get('RTA', '').strip()
+                    if rta:
+                        m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
+                        if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
+                        else: b['berekende_eta'] = f"RTA: {rta}"
+                
+                # 3. Calc
+                if b['berekende_eta'] == 'N/A':
+                    calc_eta = bt + timedelta(hours=6)
+                    b['berekende_eta'] = f"Calculated: {calc_eta.strftime('%d/%m/%y %H:%M')}"
 
-        # Toevoegen
-        if stype == 'I': gefilterd['INKOMEND'].append(b)
-        elif stype == 'U': gefilterd['UITGAAND'].append(b)
-        elif stype == 'V': gefilterd['VERPLAATSING'].append(b)
+        elif stype == 'U':
+            if nu <= bt <= grens_uit:
+                in_time_window = True
+                
+        elif stype == 'V':
+            if nu <= bt <= grens_verplaatsing:
+                in_time_window = True
+
+        # Status logic
+        b['status_flag'] = 'normal'
+        diff = (bt - nu).total_seconds()
+        if diff < 0: b['status_flag'] = 'past_due'
+        elif diff < 3600: b['status_flag'] = 'warning_soon'
+        elif diff < 5400: b['status_flag'] = 'due_soon'
+
+        # Toevoegen aan lijst
+        if in_time_window:
+            if stype == 'I': gefilterd['INKOMEND'].append(b)
+            elif stype == 'U': gefilterd['UITGAAND'].append(b)
+            elif stype == 'V': gefilterd['VERPLAATSING'].append(b)
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
@@ -287,7 +316,7 @@ def format_wijzigingen_email(w): return "" # Placeholder
 def load_state(): return {} # Placeholder
 def save_state(s): pass # Placeholder
 
-# --- MAIN LOGICA (MOET BOVENAAN STAAN VOOR DE THREADS) ---
+# --- MAIN LOGICA ---
 def main():
     logging.info("--- START MAIN ---")
     if not all([USER, PASS]):
@@ -320,12 +349,14 @@ def main():
         logging.error(f"DB Error: {e}")
         db.session.rollback()
 
+    save_state_for_comparison({"bestellingen": data})
+    logging.info("--- Run Voltooid ---")
+
 # --- ROUTES ---
 
 @app.route('/')
 @basic_auth.required 
 def home():
-    # Probeer DB te laden als memory leeg is
     if app_state["latest_snapshot"]["timestamp"] == "Nog niet uitgevoerd":
         try:
             s = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
@@ -355,7 +386,6 @@ def trigger_run():
 def status_check():
     return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
 
-# Placeholders
 @app.route('/logboek')
 @basic_auth.required
 def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
