@@ -71,7 +71,7 @@ except Exception as e:
 # --- 3. HELPER FUNCTIES & SCRAPERS ---
 
 def parse_besteltijd(besteltijd_str):
-    """Probeert datums te parsen, zowel met 2-cijferig als 4-cijferig jaartal."""
+    """Probeert datums te parsen, tolerant voor formaten."""
     DEFAULT_TIME = datetime(1970, 1, 1) 
     if not besteltijd_str: return DEFAULT_TIME
     
@@ -206,7 +206,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v90: Robust Parsing) ---")
+    logging.info("--- Running haal_bestellingen_op (v91: Debug Besteltijd & No Filter Block) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         r = session.get(url, timeout=30)
@@ -261,21 +261,29 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         stype = b.get("Type")
         besteltijd_str = b.get('Besteltijd')
         
+        # DEBUG: Log de ruwe string voor de eerste paar schepen om te zien wat er mis is
+        if len(gefilterd['INKOMEND']) < 2:
+            logging.info(f"DEBUG Besteltijd voor {b.get('Schip')}: '{besteltijd_str}'")
+
         # Datum parse poging
-        try:
-            bt = parse_besteltijd(besteltijd_str)
-            if bt.year == 1970:
-                # Als datum faalt, probeer VANDAAG te gokken uit de string als die 'uu:mm' is?
-                # Nee, we skippen als we geen datum hebben.
-                continue
-            bt = pytz.timezone('Europe/Brussels').localize(bt)
-        except: continue
+        bt = parse_besteltijd(besteltijd_str)
+        valid_date = True
+        if bt.year == 1970:
+            valid_date = False
+            # We zetten een dummy datum zodat hij niet crasht, maar wel getoond wordt
+            # (Of we zetten hem op NU zodat hij in het venster valt voor debugging)
+            bt = datetime.now() 
+        
+        bt = pytz.timezone('Europe/Brussels').localize(bt)
         
         b['berekende_eta'] = 'N/A'
         
         # INKOMEND: ETA BEPALEN
         if stype == 'I':
-             if grens_in_verleden <= bt <= grens_in:
+             # We checken venster ALLEEN als de datum geldig was. 
+             # Als datum ongeldig was, laten we hem door (veiligheidshalve) of juist niet?
+             # Laten we hem doorlaten voor nu om te zien wat er gebeurt.
+             if not valid_date or (grens_in_verleden <= bt <= grens_in):
                 # 1. Directe Detail Fetch
                 rid = b.get('ReisId')
                 if rid:
@@ -283,39 +291,40 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     t = haal_bewegingen_direct(session, rid)
                     if t: b['berekende_eta'] = f"Bewegingen: {t}"
                 
-                # 2. Fallback RTA (Nu veel losser!)
+                # 2. Fallback RTA
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
-                        # Zoek gewoon naar het EERSTE tijdspatroon (dd/mm uu:mm) in de tekst
                         m = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta)
                         if m: 
-                            # Check of er SA/ZV of CP voor stond voor de leuk
-                            if "SA/ZV" in rta or "CP" in rta:
-                                b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
-                            else:
-                                b['berekende_eta'] = f"RTA: {m.group(1)}"
-                        else:
-                            # Als geen tijdspatroon, toon gewoon de tekst
-                             b['berekende_eta'] = f"RTA: {rta[:20]}"
+                            if "SA/ZV" in rta or "CP" in rta: b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
+                            else: b['berekende_eta'] = f"RTA: {m.group(1)}"
+                        else: b['berekende_eta'] = f"RTA: {rta[:20]}"
                 
-                # 3. Calc
-                if b['berekende_eta'] == 'N/A':
+                # 3. Calc (alleen als datum geldig)
+                if b['berekende_eta'] == 'N/A' and valid_date:
                      eta = bt + timedelta(hours=6)
                      b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
                 
                 gefilterd['INKOMEND'].append(b)
         
         elif stype == 'U':
-             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
+             if not valid_date or (nu <= bt <= grens_uit): gefilterd['UITGAAND'].append(b)
         elif stype == 'V':
-             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
+             if not valid_date or (nu <= bt <= grens_verplaatsing): gefilterd['VERPLAATSING'].append(b)
 
         b['status_flag'] = 'normal'
-        diff = (bt - nu).total_seconds()
-        if diff < 0: b['status_flag'] = 'past_due'
-        elif diff < 3600: b['status_flag'] = 'warning_soon'
-        elif diff < 5400: b['status_flag'] = 'due_soon'
+        if valid_date:
+            diff = (bt - nu).total_seconds()
+            if diff < 0: b['status_flag'] = 'past_due'
+            elif diff < 3600: b['status_flag'] = 'warning_soon'
+            elif diff < 5400: b['status_flag'] = 'due_soon'
+
+    # LOGGING TERUGGEZET
+    cnt_in = len(gefilterd['INKOMEND'])
+    cnt_out = len(gefilterd['UITGAAND'])
+    cnt_mov = len(gefilterd['VERPLAATSING'])
+    logging.info(f"FILTER RESULTAAT: Totaal relevant: {cnt_in + cnt_out + cnt_mov} (In: {cnt_in}, Uit: {cnt_out}, Verpl: {cnt_mov})")
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
