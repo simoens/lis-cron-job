@@ -206,7 +206,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v91: Debug Besteltijd & No Filter Block) ---")
+    logging.info("--- Running haal_bestellingen_op (v92: Strict Time Filters Restored) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         r = session.get(url, timeout=30)
@@ -249,6 +249,7 @@ def is_mpet_ship(schip_dict):
 def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
+    # Tijdsfilters (Strikt hersteld)
     grens_uit = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in = nu + timedelta(hours=8)
@@ -261,18 +262,11 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         stype = b.get("Type")
         besteltijd_str = b.get('Besteltijd')
         
-        # DEBUG: Log de ruwe string voor de eerste paar schepen om te zien wat er mis is
-        if len(gefilterd['INKOMEND']) < 2:
-            logging.info(f"DEBUG Besteltijd voor {b.get('Schip')}: '{besteltijd_str}'")
-
         # Datum parse poging
         bt = parse_besteltijd(besteltijd_str)
-        valid_date = True
         if bt.year == 1970:
-            valid_date = False
-            # We zetten een dummy datum zodat hij niet crasht, maar wel getoond wordt
-            # (Of we zetten hem op NU zodat hij in het venster valt voor debugging)
-            bt = datetime.now() 
+            # Ongeldige datum -> SKIP (Strictere filtering dan v91)
+            continue
         
         bt = pytz.timezone('Europe/Brussels').localize(bt)
         
@@ -280,10 +274,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         # INKOMEND: ETA BEPALEN
         if stype == 'I':
-             # We checken venster ALLEEN als de datum geldig was. 
-             # Als datum ongeldig was, laten we hem door (veiligheidshalve) of juist niet?
-             # Laten we hem doorlaten voor nu om te zien wat er gebeurt.
-             if not valid_date or (grens_in_verleden <= bt <= grens_in):
+             if grens_in_verleden <= bt <= grens_in:
                 # 1. Directe Detail Fetch
                 rid = b.get('ReisId')
                 if rid:
@@ -291,7 +282,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                     t = haal_bewegingen_direct(session, rid)
                     if t: b['berekende_eta'] = f"Bewegingen: {t}"
                 
-                # 2. Fallback RTA
+                # 2. Fallback RTA (Nu veel losser!)
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
@@ -301,26 +292,31 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                             else: b['berekende_eta'] = f"RTA: {m.group(1)}"
                         else: b['berekende_eta'] = f"RTA: {rta[:20]}"
                 
-                # 3. Calc (alleen als datum geldig)
-                if b['berekende_eta'] == 'N/A' and valid_date:
+                # 3. Calc
+                if b['berekende_eta'] == 'N/A':
                      eta = bt + timedelta(hours=6)
                      b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
                 
                 gefilterd['INKOMEND'].append(b)
         
+        # UITGAAND
         elif stype == 'U':
-             if not valid_date or (nu <= bt <= grens_uit): gefilterd['UITGAAND'].append(b)
+             # Alleen als binnen venster
+             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
+        
+        # VERPLAATSING
         elif stype == 'V':
-             if not valid_date or (nu <= bt <= grens_verplaatsing): gefilterd['VERPLAATSING'].append(b)
+             # Alleen als binnen venster
+             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
 
+        # Status logic
         b['status_flag'] = 'normal'
-        if valid_date:
-            diff = (bt - nu).total_seconds()
-            if diff < 0: b['status_flag'] = 'past_due'
-            elif diff < 3600: b['status_flag'] = 'warning_soon'
-            elif diff < 5400: b['status_flag'] = 'due_soon'
+        diff = (bt - nu).total_seconds()
+        if diff < 0: b['status_flag'] = 'past_due'
+        elif diff < 3600: b['status_flag'] = 'warning_soon'
+        elif diff < 5400: b['status_flag'] = 'due_soon'
 
-    # LOGGING TERUGGEZET
+    # Logging
     cnt_in = len(gefilterd['INKOMEND'])
     cnt_out = len(gefilterd['UITGAAND'])
     cnt_mov = len(gefilterd['VERPLAATSING'])
