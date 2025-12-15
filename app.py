@@ -114,7 +114,7 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- DE KERN: DIRECTE GET + REGEX SCAN ---
+# --- DE KERN: BEWEGINGEN UITLEZEN MET REGEX ---
 def haal_bewegingen_direct_regex(session, reis_id):
     """
     Haalt de specifieke Bewegingen-pagina op voor één schip (Stateless GET).
@@ -198,7 +198,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v100: Stateless Direct Regex) ---")
+    logging.info("--- Running haal_bestellingen_op (v101: Restored Routes) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -287,6 +287,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     details_fetched = 0
 
     for b in bestellingen:
+        # MPET Filter
         if not is_mpet_ship(b): continue
         
         stype = b.get("Type")
@@ -300,19 +301,19 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         b['berekende_eta'] = 'N/A'
         
-        # INKOMEND
+        # INKOMEND: ETA BEPALEN
         if stype == 'I':
-            if grens_in_verleden <= bt <= grens_in:
-                # 1. Directe Detail Fetch (Stateless GET)
+             if grens_in_verleden <= bt <= grens_in:
+                # 1. Directe Detail Fetch
                 rid = b.get('ReisId')
                 if rid:
-                    details_fetched += 1
-                    logging.info(f"Ophalen bewegingen voor {b.get('Schip')}...")
                     time.sleep(0.2) 
                     t = haal_bewegingen_direct_regex(session, rid)
-                    if t: b['berekende_eta'] = f"Bewegingen: {t}"
+                    if t: 
+                        b['berekende_eta'] = f"Bewegingen: {t}"
+                        details_fetched += 1
                 
-                # 2. Fallback RTA
+                # 2. Fallback RTA (Nu veel losser!)
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
@@ -345,10 +346,33 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-def load_state_for_comparison(): return {}
-def save_state_for_comparison(s): pass
-def vergelijk_bestellingen(a, b): return []
-def format_wijzigingen_email(w): return ""
+def load_state_for_comparison():
+    try:
+        bestellingen_obj = KeyValueStore.query.get('bestellingen')
+        return {"bestellingen": bestellingen_obj.value if bestellingen_obj else []}
+    except Exception as e:
+        return {"bestellingen": []}
+
+def save_state_for_comparison(state):
+    try:
+        key = 'bestellingen'
+        value = state.get(key)
+        if value is None: return 
+        obj = KeyValueStore.query.get(key)
+        if obj: 
+            obj.value = value
+        else:
+            obj = KeyValueStore(key=key, value=value)
+            db.session.add(obj)
+    except Exception as e:
+        db.session.rollback()
+
+def vergelijk_bestellingen(oude, nieuwe):
+    # (Plaats hier je vergelijkingslogica als je die weer wilt activeren)
+    return []
+
+def format_wijzigingen_email(w): 
+    return ""
 
 # --- MAIN ---
 def main():
@@ -424,11 +448,66 @@ def status_check():
 
 @app.route('/logboek')
 @basic_auth.required
-def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
+def logboek():
+    search_term = request.args.get('q', '')
+    formatted_changes = []
+    all_ships_sorted = []
+    
+    try:
+        all_changes_query = DetectedChange.query.all()
+        unique_ships = set()
+        ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
+        
+        for change in all_changes_query:
+            if change.content:
+                ship_names_found = ship_regex.findall(change.content)
+                for name in ship_names_found:
+                    unique_ships.add(name.strip()) 
+        all_ships_sorted = sorted(list(unique_ships))
+        
+        query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
+        if search_term:
+            query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
+        changes_db_objects = query.limit(100).all()
+        
+        for change in changes_db_objects:
+            formatted_changes.append({
+                "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                "onderwerp": change.onderwerp,
+                "content": change.content
+            })
+    except: pass
+    
+    return render_template('logboek.html', changes=formatted_changes, search_term=search_term, all_ships=all_ships_sorted, secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
 @basic_auth.required
-def statistieken(): return render_template('statistieken.html', stats={}, secret_key=os.environ.get('SECRET_KEY'))
+def statistieken():
+    stats = {"total_changes": 0, "top_ships": [], "vervroegd": [], "vertraagd": [], "op_tijd": []}
+    try:
+        brussels_tz = pytz.timezone('Europe/Brussels')
+        seven_days_ago_utc = datetime.now(brussels_tz).astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
+        
+        changes = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc).order_by(DetectedChange.timestamp.asc()).all() 
+        snapshots = Snapshot.query.filter(Snapshot.timestamp >= seven_days_ago_utc).all()
+        
+        stats["total_changes"] = len(changes)
+        
+        if snapshots:
+            latest = snapshots[-1].content_data
+            stats["total_incoming"] = len(latest.get('INKOMEND', []))
+            stats["total_outgoing"] = len(latest.get('UITGAAND', []))
+            stats["total_shifting"] = len(latest.get('VERPLAATSING', []))
+            
+        cnt = Counter()
+        rgx = re.compile(r"'(.*?)'")
+        for c in changes:
+            found = rgx.findall(c.content)
+            for f in found: cnt[f] += 1
+        stats["top_ships"] = cnt.most_common(5)
+
+    except: pass
+    return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
