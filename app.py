@@ -14,7 +14,7 @@ from flask_sqlalchemy import SQLAlchemy
 import psycopg2 
 from flask_basicauth import BasicAuth
 from werkzeug.middleware.proxy_fix import ProxyFix 
-from urllib.parse import quote # NIEUW: Nodig voor URL encoding
+from urllib.parse import quote
 
 # --- 1. CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -115,7 +115,48 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- DE KERN: BEWEGINGEN UITLEZEN MET REGEX ---
+# --- IMO SCRAPER ---
+def haal_imo_nummer(session, soup_met_details):
+    """
+    Zoekt de link naar de scheepsdetails in de huidige pagina (die open staat op details),
+    haalt die pagina op en extract het IMO nummer.
+    """
+    imo = None
+    try:
+        # We zoeken in de hele HTML naar het patroon van de scheeps-detail URL
+        # control=schepen & ID=12345
+        match = re.search(r"DcDataPage\.aspx\?control=schepen.*?ID=(\d+)", str(soup_met_details))
+        
+        if match:
+            schepen_db_id = match.group(1)
+            # logging.info(f" -> Schepen DB ID gevonden: {schepen_db_id}")
+            
+            detail_url = f"https://lis.loodswezen.be/Lis/Framework/DcDataPage.aspx?control=schepen&ID={schepen_db_id}"
+            r = session.get(detail_url, timeout=10)
+            
+            imo_soup = BeautifulSoup(r.content, 'lxml')
+            
+            # Probeer input veld
+            inputs = imo_soup.find_all('input')
+            for i in inputs:
+                if 'imo' in i.get('name', '').lower() or 'imo' in i.get('id', '').lower():
+                    val = i.get('value')
+                    if val and val.isdigit() and len(val) == 7:
+                        imo = val
+                        break
+            
+            # Fallback: Regex in tekst
+            if not imo:
+                text_matches = re.findall(r"IMO\s*[:\.]?\s*(\d{7})", r.text, re.IGNORECASE)
+                if text_matches:
+                    imo = text_matches[0]
+
+    except Exception as e:
+        logging.warning(f"Kon IMO niet ophalen: {e}")
+        
+    return imo
+
+# --- BEWEGINGEN UITLEZEN MET REGEX ---
 def haal_bewegingen_direct_regex(session, reis_id):
     """
     Haalt de specifieke Bewegingen-pagina op voor één schip (Stateless GET).
@@ -123,14 +164,12 @@ def haal_bewegingen_direct_regex(session, reis_id):
     """
     if not reis_id: return None
     try:
-        # Directe URL naar de detailpagina van DIT schip
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
         session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
         
         r = session.get(url, timeout=20)
         html_text = r.text
         
-        # Regex scanner (dezelfde krachtige logica als v99, maar nu op de unieke pagina)
         matches = []
         
         # Zoek naar Deurganckdok of MPET
@@ -139,7 +178,6 @@ def haal_bewegingen_direct_regex(session, reis_id):
             snippet = html_text[m.end():m.end()+200]
             
             # Zoek datums in snippet (dd/mm/yyyy of dd/mm/yy)
-            # Tabelvolgorde is Locatie -> ETA -> RTA -> ATA
             dates = re.findall(r"(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2})", snippet)
             if not dates:
                 dates = re.findall(r"(\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2})", snippet)
@@ -198,12 +236,19 @@ def parse_table_from_soup(soup):
         res.append(d)
     return res
 
-def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v102: VesselFinder Link) ---")
+def haal_bestellingen_en_details(session):
+    logging.info("--- Running haal_bestellingen_en_details (v103: IMO & Details) ---")
+    
+    url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+    
+    # Tijdfilters instellen voor "Lazy Loading" check
+    brussels_tz = pytz.timezone('Europe/Brussels')
+    nu = datetime.now(brussels_tz)
+    grens_in = nu + timedelta(hours=8)
+    grens_in_verleden = nu - timedelta(hours=8)
+    
     try:
-        url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        
-        # 1. Start: GET pagina
+        # 1. GET
         resp = session.get(url, timeout=30)
         soup = BeautifulSoup(resp.content, 'lxml')
         
@@ -215,8 +260,7 @@ def haal_bestellingen_op(session):
             if 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$betrokken']
             return d
 
-        # 2. STAP 1: Vinkje uit (PostBack) - KRIJG ALLE SCHEPEN
-        logging.info("Uncheck Eigen Reizen...")
+        # 2. Uncheck Eigen Reizen
         d = get_inputs(soup)
         d['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
@@ -226,46 +270,90 @@ def haal_bestellingen_op(session):
         soup = BeautifulSoup(resp.content, 'lxml')
         time.sleep(1)
         
-        # 3. STAP 2: Zoeken
-        logging.info("Zoeken...")
+        # 3. Zoeken
         d = get_inputs(soup)
         d['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         d['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
-        # Agent weg
         if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
-        
-        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
-        d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
         d['__EVENTTARGET'] = ''
         
         resp = session.post(url, data=d, timeout=30)
         soup = BeautifulSoup(resp.content, 'lxml')
         
-        # 4. LOOP PAGINA'S
         all_ships = []
         page = 1
         max_pages = 15
         
         while page <= max_pages:
-            logging.info(f"Paginering: {page}")
+            logging.info(f"Pagina {page} verwerken...")
             current_ships = parse_table_from_soup(soup)
+            
+            for s in current_ships:
+                # Is het MPET?
+                is_mpet = False
+                e = s.get('Entry Point', '').lower()
+                x = s.get('Exit Point', '').lower()
+                if 'mpet' in e or 'mpet' in x: is_mpet = True
+                
+                # Datum check (Inkomend)
+                stype = s.get('Type')
+                in_window = False
+                if stype == 'I':
+                    try:
+                        bt = parse_besteltijd(s.get('Besteltijd'))
+                        if bt.year > 1970:
+                            bt_loc = brussels_tz.localize(bt)
+                            if grens_in_verleden <= bt_loc <= grens_in: in_window = True
+                    except: pass
+                
+                # Als Relevant -> Haal details via PostBack EN IMO
+                if is_mpet and in_window and s.get('ReisId'):
+                    logging.info(f"Relevant: {s['Schip']}. Details & IMO ophalen...")
+                    
+                    try:
+                        # 1. PostBack om details te laden in de pagina
+                        det_data = get_inputs(soup)
+                        det_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
+                        det_data['__EVENTARGUMENT'] = f'value={s["ReisId"]};text='
+                        
+                        resp = session.post(url, data=det_data, timeout=20)
+                        
+                        # 2. Haal IMO uit de detail view (die nu geladen is)
+                        soup_with_details = BeautifulSoup(resp.content, 'lxml')
+                        imo = haal_imo_nummer(session, soup_with_details)
+                        if imo:
+                            s['IMO'] = imo
+                            logging.info(f" -> IMO Gevonden: {imo}")
+
+                        # 3. Haal ETA via directe URL (stateless, veilig)
+                        eta = haal_bewegingen_direct_regex(session, s.get('ReisId'))
+                        if eta:
+                            s['Details_ETA'] = eta
+                            logging.info(f" -> ETA Gevonden: {eta}")
+                        
+                        # Update main soup
+                        soup = soup_with_details
+                            
+                    except Exception as ex:
+                        logging.error(f"Fout bij details: {ex}")
+
             all_ships.extend(current_ships)
             
-            page += 1
-            link = soup.find('a', href=re.compile(f"Page\${page}"))
+            # Paging
+            next_page = page + 1
+            link = soup.find('a', href=re.compile(f"Page\${next_page}"))
             if not link: break
             
             pd = get_inputs(soup)
-            if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in pd: del pd['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
             m = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", link['href'])
             if m:
                 pd['__EVENTTARGET'] = m.group(1)
                 pd['__EVENTARGUMENT'] = m.group(2)
                 resp = session.post(url, data=pd, timeout=30)
                 soup = BeautifulSoup(resp.content, 'lxml')
+                page += 1
             else: break
             
-        logging.info(f"Totaal {len(all_ships)} schepen gevonden.")
         return all_ships
 
     except Exception as e:
@@ -288,13 +376,13 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     details_fetched = 0
 
     for b in bestellingen:
-        # --- VESSELFINDER URL GENERATIE ---
-        # We maken altijd een URL aan, ook al gebruiken we hem misschien alleen bij Inkomend.
+        # VESSELFINDER URL BOUWEN
         schip_naam = b.get('Schip', '')
-        # Verwijder (d) en whitespace
-        clean_name = re.sub(r'\s*\(d\)\s*$', '', schip_naam).strip()
-        # Maak URL safe
-        b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
+        if b.get('IMO'):
+             b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={b['IMO']}"
+        else:
+             clean_name = re.sub(r'\s*\(d\)\s*$', '', schip_naam).strip()
+             b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
 
         # MPET Filter
         if not is_mpet_ship(b): continue
@@ -310,19 +398,14 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         b['berekende_eta'] = 'N/A'
         
-        # INKOMEND: ETA BEPALEN
+        # INKOMEND
         if stype == 'I':
              if grens_in_verleden <= bt <= grens_in:
                 # 1. Directe Detail Fetch
-                rid = b.get('ReisId')
-                if rid:
-                    time.sleep(0.2) 
-                    t = haal_bewegingen_direct_regex(session, rid)
-                    if t: 
-                        b['berekende_eta'] = f"Bewegingen: {t}"
-                        details_fetched += 1
+                if 'Details_ETA' in b:
+                    b['berekende_eta'] = f"Bewegingen: {b['Details_ETA']}"
                 
-                # 2. Fallback RTA (Nu veel losser!)
+                # 2. Fallback RTA
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
@@ -393,7 +476,7 @@ def main():
         logging.error("Login mislukt.")
         return
     
-    nieuwe = haal_bestellingen_op(session)
+    nieuwe = haal_bestellingen_en_details(session)
     if not nieuwe:
         logging.error("Geen bestellingen.")
         return
