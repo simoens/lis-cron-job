@@ -1,414 +1,113 @@
 import requests
 from bs4 import BeautifulSoup
 import logging
-from datetime import datetime, timedelta
-import re
 import os
-import json 
-from collections import deque, Counter
-import pytz
-from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
-import threading
-import time
-from flask_sqlalchemy import SQLAlchemy 
-import psycopg2 
-from flask_basicauth import BasicAuth
-from werkzeug.middleware.proxy_fix import ProxyFix 
+import re
 
-# --- 1. CONFIGURATIE ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
+# --- CONFIGURATIE ---
+# Vul hier je gegevens in als je lokaal test, of laat ze via ENV komen op Render
 USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 
-app_state = {
-    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}}, 
-    "change_history": deque(maxlen=10)
-}
-data_lock = threading.Lock() 
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+def run_diagnosis():
+    if not USER or not PASS:
+        logging.error("❌ GEEN GEBRUIKERSNAAM/WACHTWOORD GEVONDEN!")
+        return
 
-# Database Fix voor Render
-uri = os.environ.get('DATABASE_URL')
-if uri and uri.startswith("postgres://"):
-    uri = uri.replace("postgres://", "postgresql://", 1)
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
-app.config['SQLALCHEMY_DATABASE_URI'] = uri
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['BASIC_AUTH_USERNAME'] = 'mpet'
-app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
-app.config['BASIC_AUTH_FORCE'] = False 
-
-basic_auth = BasicAuth(app)
-db = SQLAlchemy(app)
-
-# --- 2. MODELLEN ---
-class Snapshot(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    content_data = db.Column(db.JSON)
-
-class DetectedChange(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    onderwerp = db.Column(db.String(200))
-    content = db.Column(db.Text)
-    type = db.Column(db.String(10)) 
-
-class KeyValueStore(db.Model):
-    key = db.Column(db.String(50), primary_key=True)
-    value = db.Column(db.JSON)
-
-# Init DB
-try:
-    with app.app_context():
-        db.create_all()
-except Exception as e:
-    logging.warning(f"DB Init Warning: {e}")
-
-# --- 3. HELPER FUNCTIES & SCRAPERS ---
-
-def parse_besteltijd(besteltijd_str):
-    """Probeert datums te parsen, tolerant voor formaten."""
-    DEFAULT_TIME = datetime(1970, 1, 1) 
-    if not besteltijd_str: return DEFAULT_TIME
-    
-    clean_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
-    
-    # Probeer dd/mm/yy HH:MM
+    # 1. LOGIN
+    logging.info("--- 1. INLOGGEN ---")
     try:
-        return datetime.strptime(clean_str, "%d/%m/%y %H:%M")
-    except ValueError:
-        pass
-        
-    # Probeer dd/mm/yyyy HH:MM
-    try:
-        return datetime.strptime(clean_str, "%d/%m/%Y %H:%M")
-    except ValueError:
-        pass
-        
-    return DEFAULT_TIME
-
-def login(session):
-    try:
-        logging.info("Login attempt started...")
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session.headers.update(headers)
-        
-        r = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
+        r = session.get("https://lis.loodswezen.be/Lis/Login.aspx")
         soup = BeautifulSoup(r.content, 'lxml')
         
-        data = {
+        payload = {
             '__VIEWSTATE': soup.find('input', {'name': '__VIEWSTATE'})['value'],
             'ctl00$ContentPlaceHolder1$login$uname': USER,
             'ctl00$ContentPlaceHolder1$login$password': PASS,
             'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
         }
         val = soup.find('input', {'name': '__EVENTVALIDATION'})
-        if val: data['__EVENTVALIDATION'] = val['value']
-            
-        r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=data, timeout=30)
+        if val: payload['__EVENTVALIDATION'] = val['value']
+
+        r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=payload)
         
-        if "Login.aspx" not in r.url:
-            logging.info("LOGIN SUCCESSFUL!")
-            return True
-        logging.error("Login failed.")
-        return False
+        if "Login.aspx" in r.url:
+            logging.error("❌ Login mislukt. Check wachtwoord.")
+            return
+        logging.info("✅ Login succesvol.")
+
     except Exception as e:
-        logging.error(f"Error during login: {e}")
-        return False
+        logging.error(f"❌ Crash bij login: {e}")
+        return
 
-# --- DE KERN: BEWEGINGEN UITLEZEN ---
-def haal_bewegingen_direct(session, reis_id):
-    """Haalt ETA/ATA op via directe GET naar Bewegingen.aspx"""
-    if not reis_id: return None
-    try:
-        url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
-        session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
-        
-        r = session.get(url, timeout=20)
-        soup = BeautifulSoup(r.content, 'lxml')
-        
-        # Tabel zoeken
-        table = soup.find('table', id='ctl00_ContentPlaceHolder1_gridMovements')
-        if not table:
-             for t in soup.find_all('table'):
-                 if "Locatie" in t.get_text() and "ETA" in t.get_text():
-                     table = t; break
-        
-        if not table: return None
-        
-        # Vind kolom indexen
-        headers = [c.get_text(strip=True) for c in table.find_all('tr')[0].find_all(['th','td'])]
-        ix_loc = -1; ix_eta = -1; ix_ata = -1
-        for i, h in enumerate(headers):
-            if "Locatie" in h: ix_loc = i
-            elif "ETA" in h: ix_eta = i
-            elif "ATA" in h: ix_ata = i
-            
-        target_time = None
-        # Loop rijen (onderste wint)
-        for row in table.find_all('tr')[1:]:
-            cells = row.find_all('td')
-            if len(cells) <= ix_loc: continue
-            loc = cells[ix_loc].get_text(strip=True)
-            
-            if "Deurganckdok" in loc or "MPET" in loc:
-                eta = cells[ix_eta].get_text(strip=True) if ix_eta > -1 else ""
-                ata = cells[ix_ata].get_text(strip=True) if ix_ata > -1 else ""
-                val = ata if ata else eta
-                if val: target_time = val
-                
-        if target_time:
-            # Flexibele regex voor tijd extractie (zowel yy als yyyy)
-            m = re.search(r"(\d{2}/\d{2})/(?:\d{4}|\d{2})\s+(\d{2}:\d{2})", target_time)
-            if m: return f"{m.group(1)} {m.group(2)}"
-            return target_time
-            
-    except: pass
-    return None
-
-def parse_table_from_soup(soup):
+    # 2. PAGINA OPHALEN
+    logging.info("\n--- 2. TABEL OPHALEN ---")
+    r = session.get("https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx")
+    soup = BeautifulSoup(r.content, 'lxml')
+    
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
-    if not table: return []
     
-    cols = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
-    res = []
+    if not table:
+        logging.error("❌ Tabel 'ctl00_ContentPlaceHolder1_ctl01_list_gv' NIET gevonden in HTML.")
+        # Optioneel: print een stukje HTML om te zien wat er wel is
+        # logging.info(soup.prettify()[:1000])
+        return
+
+    logging.info("✅ Tabel gevonden.")
+
+    # 3. HEADERS ANALYSEREN
+    logging.info("\n--- 3. KOLOM ANALYSE ---")
+    rows = table.find_all('tr')
     
-    for row in table.find_all('tr')[1:]: 
+    if not rows:
+        logging.error("❌ Tabel is leeg (geen rijen).")
+        return
+
+    header_row = rows[0]
+    headers = header_cells = header_row.find_all(['th', 'td'])
+    
+    logging.info(f"Aantal kolommen gevonden: {len(headers)}")
+    logging.info("-" * 40)
+    logging.info(f"{'INDEX':<6} | {'KOLOMNAAM (Clean text)'}")
+    logging.info("-" * 40)
+    
+    header_map = {}
+    for idx, cell in enumerate(headers):
+        txt = cell.get_text(strip=True)
+        header_map[idx] = txt
+        logging.info(f"{idx:<6} | {txt}")
+        if "Bestel" in txt:
+            logging.info(f"       ^^^ HIER LIJKT DE BESTELTIJD TE ZITTEN ^^^")
+
+    # 4. DATA ANALYSEREN (Eerste 3 schepen)
+    logging.info("\n--- 4. DATA SAMPLE (Eerste 3 rijen) ---")
+    
+    data_rows = rows[1:4] # Pak rij 1 t/m 3 (0 is header)
+    
+    for i, row in enumerate(data_rows):
         cells = row.find_all('td')
-        if not cells: continue
-        d = {}
-        for k, i in cols.items():
-            if i < len(cells):
-                val = cells[i].get_text(strip=True)
-                if k == "RTA" and not val:
-                    if cells[i].has_attr('title'): val = cells[i]['title']
-                    else:
-                        c = cells[i].find(lambda t: t.has_attr('title'))
-                        if c: val = c['title']
-                if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
-                d[k] = val
+        logging.info(f"\nSCHIP #{i+1}:")
         
-        # ID FIX
-        if row.has_attr('onclick'):
-            m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
-            if m: d['ReisId'] = m.group(1)
-        if 'ReisId' not in d:
-             l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
-             if l:
-                 m = re.search(r'ReisId=(\d+)', l['href'])
-                 if m: d['ReisId'] = m.group(1)
-        
-        res.append(d)
-    return res
-
-def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v92: Strict Time Filters Restored) ---")
-    try:
-        url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
-        r = session.get(url, timeout=30)
-        soup = BeautifulSoup(r.content, 'lxml')
-        items = parse_table_from_soup(soup)
-        
-        # Paging
-        page = 1
-        while page < 5:
-            page += 1
-            link = soup.find('a', href=re.compile(f"Page\${page}"))
-            if not link: break
+        # Probeer scheepsnaam te vinden (vaak kolom 11, maar we checken alles)
+        for idx, cell in enumerate(cells):
+            waarde = cell.get_text(strip=True)
+            kolom_naam = header_map.get(idx, "Onbekend")
             
-            logging.info(f"Paginering: {page}")
-            fdata = {}
-            for h in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
-                tag = soup.find('input', {'name': h})
-                if tag: fdata[h] = tag.get('value', '')
-            
-            m = re.search(r"__doPostBack\('([^']+)','([^']+)'\)", link['href'])
-            if m:
-                fdata['__EVENTTARGET'] = m.group(1)
-                fdata['__EVENTARGUMENT'] = m.group(2)
-                r = session.post(url, data=fdata, timeout=30)
-                soup = BeautifulSoup(r.content, 'lxml')
-                items.extend(parse_table_from_soup(soup))
-            else: break
-            
-        logging.info(f"Totaal {len(items)} schepen.")
-        return items
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        return []
-
-def is_mpet_ship(schip_dict):
-    e = schip_dict.get('Entry Point', '').lower()
-    x = schip_dict.get('Exit Point', '').lower()
-    return 'mpet' in e or 'mpet' in x
-
-def filter_snapshot_schepen(bestellingen, session, nu):
-    gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
-    
-    # Tijdsfilters (Strikt hersteld)
-    grens_uit = nu + timedelta(hours=16)
-    grens_in_verleden = nu - timedelta(hours=8)
-    grens_in = nu + timedelta(hours=8)
-    grens_verplaatsing = nu + timedelta(hours=8)
-    
-    for b in bestellingen:
-        # MPET Filter
-        if not is_mpet_ship(b): continue
-        
-        stype = b.get("Type")
-        besteltijd_str = b.get('Besteltijd')
-        
-        # Datum parse poging
-        bt = parse_besteltijd(besteltijd_str)
-        if bt.year == 1970:
-            # Ongeldige datum -> SKIP (Strictere filtering dan v91)
-            continue
-        
-        bt = pytz.timezone('Europe/Brussels').localize(bt)
-        
-        b['berekende_eta'] = 'N/A'
-        
-        # INKOMEND: ETA BEPALEN
-        if stype == 'I':
-             if grens_in_verleden <= bt <= grens_in:
-                # 1. Directe Detail Fetch
-                rid = b.get('ReisId')
-                if rid:
-                    time.sleep(0.2) 
-                    t = haal_bewegingen_direct(session, rid)
-                    if t: b['berekende_eta'] = f"Bewegingen: {t}"
+            # Speciale check voor Besteltijd
+            marker = ""
+            if "Bestel" in kolom_naam:
+                marker = " <--- DIT ZOEKEN WE"
+            elif idx == 5:
+                marker = " <--- HUIDIGE SCRIPT KIJKT HIER (Index 5)"
                 
-                # 2. Fallback RTA (Nu veel losser!)
-                if b['berekende_eta'] == 'N/A':
-                    rta = b.get('RTA', '').strip()
-                    if rta:
-                        m = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta)
-                        if m: 
-                            if "SA/ZV" in rta or "CP" in rta: b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
-                            else: b['berekende_eta'] = f"RTA: {m.group(1)}"
-                        else: b['berekende_eta'] = f"RTA: {rta[:20]}"
-                
-                # 3. Calc
-                if b['berekende_eta'] == 'N/A':
-                     eta = bt + timedelta(hours=6)
-                     b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
-                
-                gefilterd['INKOMEND'].append(b)
-        
-        # UITGAAND
-        elif stype == 'U':
-             # Alleen als binnen venster
-             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
-        
-        # VERPLAATSING
-        elif stype == 'V':
-             # Alleen als binnen venster
-             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
+            logging.info(f"   [{idx}] {kolom_naam}: '{waarde}'{marker}")
 
-        # Status logic
-        b['status_flag'] = 'normal'
-        diff = (bt - nu).total_seconds()
-        if diff < 0: b['status_flag'] = 'past_due'
-        elif diff < 3600: b['status_flag'] = 'warning_soon'
-        elif diff < 5400: b['status_flag'] = 'due_soon'
+    logging.info("\n--- DIAGNOSE EINDE ---")
 
-    # Logging
-    cnt_in = len(gefilterd['INKOMEND'])
-    cnt_out = len(gefilterd['UITGAAND'])
-    cnt_mov = len(gefilterd['VERPLAATSING'])
-    logging.info(f"FILTER RESULTAAT: Totaal relevant: {cnt_in + cnt_out + cnt_mov} (In: {cnt_in}, Uit: {cnt_out}, Verpl: {cnt_mov})")
-
-    gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
-    return gefilterd
-
-def load_state_for_comparison(): return {}
-def save_state_for_comparison(s): pass
-def vergelijk_bestellingen(a, b): return []
-def format_wijzigingen_email(w): return ""
-
-# --- MAIN ---
-def main():
-    if not all([USER, PASS]):
-        logging.critical("FATAL: Geen user/pass!")
-        return
-    
-    session = requests.Session()
-    if not login(session):
-        logging.error("Login mislukt.")
-        return
-    
-    nieuwe = haal_bestellingen_op(session)
-    if not nieuwe:
-        logging.error("Geen bestellingen.")
-        return
-    
-    logging.info("Snapshot genereren...")
-    nu = datetime.now(pytz.timezone('Europe/Brussels'))
-    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
-    
-    try:
-        s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
-        db.session.add(s)
-        db.session.commit()
-        with data_lock:
-             app_state["latest_snapshot"] = {
-                "timestamp": nu.strftime('%d-%m-%Y %H:%M:%S'),
-                "content_data": snapshot_data
-            }
-        logging.info("Snapshot opgeslagen.")
-    except Exception as e:
-         logging.error(f"DB Error: {e}")
-         db.session.rollback()
-
-    save_state_for_comparison({"bestellingen": nieuwe})
-    logging.info("--- Run Voltooid ---")
-
-def main_task():
-    with app.app_context(): main()
-
-# --- ROUTES ---
-@app.route('/')
-@basic_auth.required 
-def home():
-    if app_state["latest_snapshot"]["timestamp"] == "Nog niet uitgevoerd":
-        try:
-            s = Snapshot.query.order_by(Snapshot.timestamp.desc()).first()
-            if s:
-                 app_state["latest_snapshot"] = {
-                    "timestamp": pytz.utc.localize(s.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                    "content_data": s.content_data
-                }
-        except: pass
-    return render_template('index.html', snapshot=app_state["latest_snapshot"], changes=[], secret_key=os.environ.get('SECRET_KEY'))
-
-@app.route('/force-snapshot', methods=['POST'])
-@basic_auth.required
-def force_snapshot_route():
-    if request.form.get('secret') != os.environ.get('SECRET_KEY'): return jsonify({"status":"error"}), 403
-    threading.Thread(target=main_task).start()
-    return jsonify({"status": "started"})
-
-@app.route('/trigger-run')
-def trigger_run():
-    if request.args.get('secret') != os.environ.get('SECRET_KEY'): abort(403)
-    threading.Thread(target=main_task).start()
-    return "OK", 200
-
-@app.route('/status')
-def status_check():
-    return jsonify({"timestamp": app_state["latest_snapshot"].get("timestamp", "N/A")})
-
-@app.route('/logboek')
-@basic_auth.required
-def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
-
-@app.route('/statistieken')
-@basic_auth.required
-def statistieken(): return render_template('statistieken.html', stats={}, secret_key=os.environ.get('SECRET_KEY'))
-
-if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+if __name__ == "__main__":
+    run_diagnosis()
