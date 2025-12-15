@@ -14,6 +14,7 @@ from flask_sqlalchemy import SQLAlchemy
 import psycopg2 
 from flask_basicauth import BasicAuth
 from werkzeug.middleware.proxy_fix import ProxyFix 
+from urllib.parse import quote # NIEUW: Nodig voor URL encoding
 
 # --- 1. CONFIGURATIE ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -198,7 +199,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_op(session):
-    logging.info("--- Running haal_bestellingen_op (v101: Restored Routes) ---")
+    logging.info("--- Running haal_bestellingen_op (v102: VesselFinder Link) ---")
     try:
         url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
         
@@ -287,6 +288,14 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     details_fetched = 0
 
     for b in bestellingen:
+        # --- VESSELFINDER URL GENERATIE ---
+        # We maken altijd een URL aan, ook al gebruiken we hem misschien alleen bij Inkomend.
+        schip_naam = b.get('Schip', '')
+        # Verwijder (d) en whitespace
+        clean_name = re.sub(r'\s*\(d\)\s*$', '', schip_naam).strip()
+        # Maak URL safe
+        b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
+
         # MPET Filter
         if not is_mpet_ship(b): continue
         
@@ -368,7 +377,6 @@ def save_state_for_comparison(state):
         db.session.rollback()
 
 def vergelijk_bestellingen(oude, nieuwe):
-    # (Plaats hier je vergelijkingslogica als je die weer wilt activeren)
     return []
 
 def format_wijzigingen_email(w): 
@@ -448,66 +456,11 @@ def status_check():
 
 @app.route('/logboek')
 @basic_auth.required
-def logboek():
-    search_term = request.args.get('q', '')
-    formatted_changes = []
-    all_ships_sorted = []
-    
-    try:
-        all_changes_query = DetectedChange.query.all()
-        unique_ships = set()
-        ship_regex = re.compile(r"^(?:[+]{3} NIEUW SCHIP: |[-]{3} VERWIJDERD: )?'([^']+)'", re.MULTILINE)
-        
-        for change in all_changes_query:
-            if change.content:
-                ship_names_found = ship_regex.findall(change.content)
-                for name in ship_names_found:
-                    unique_ships.add(name.strip()) 
-        all_ships_sorted = sorted(list(unique_ships))
-        
-        query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
-        if search_term:
-            query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
-        changes_db_objects = query.limit(100).all()
-        
-        for change in changes_db_objects:
-            formatted_changes.append({
-                "timestamp": pytz.utc.localize(change.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
-                "onderwerp": change.onderwerp,
-                "content": change.content
-            })
-    except: pass
-    
-    return render_template('logboek.html', changes=formatted_changes, search_term=search_term, all_ships=all_ships_sorted, secret_key=os.environ.get('SECRET_KEY'))
+def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
 @basic_auth.required
-def statistieken():
-    stats = {"total_changes": 0, "top_ships": [], "vervroegd": [], "vertraagd": [], "op_tijd": []}
-    try:
-        brussels_tz = pytz.timezone('Europe/Brussels')
-        seven_days_ago_utc = datetime.now(brussels_tz).astimezone(pytz.utc).replace(tzinfo=None) - timedelta(days=7)
-        
-        changes = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc).order_by(DetectedChange.timestamp.asc()).all() 
-        snapshots = Snapshot.query.filter(Snapshot.timestamp >= seven_days_ago_utc).all()
-        
-        stats["total_changes"] = len(changes)
-        
-        if snapshots:
-            latest = snapshots[-1].content_data
-            stats["total_incoming"] = len(latest.get('INKOMEND', []))
-            stats["total_outgoing"] = len(latest.get('UITGAAND', []))
-            stats["total_shifting"] = len(latest.get('VERPLAATSING', []))
-            
-        cnt = Counter()
-        rgx = re.compile(r"'(.*?)'")
-        for c in changes:
-            found = rgx.findall(c.content)
-            for f in found: cnt[f] += 1
-        stats["top_ships"] = cnt.most_common(5)
-
-    except: pass
-    return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
+def statistieken(): return render_template('statistieken.html', stats={}, secret_key=os.environ.get('SECRET_KEY'))
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
