@@ -115,61 +115,86 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- DE KERN: BEWEGINGEN UITLEZEN MET REGEX (STATELESS) ---
+# --- DE KERN: IMO & BEWEGINGEN ---
+
+def haal_imo_nummer(session, soup_met_details):
+    """
+    Zoekt de link naar scheepsdetails in de HTML en haalt het IMO nummer op.
+    """
+    imo = None
+    try:
+        # Zoek naar het ID in de 'openEditDialog' functie
+        # Voorbeeld: ...openEditDialog('/Lis/Framework/DcDataPage.aspx?control=schepen&ID=536047618'...
+        html_str = str(soup_met_details)
+        match = re.search(r"DcDataPage\.aspx\?control=schepen.*?ID=(\d+)", html_str)
+        
+        if match:
+            schepen_db_id = match.group(1)
+            detail_url = f"https://lis.loodswezen.be/Lis/Framework/DcDataPage.aspx?control=schepen&ID={schepen_db_id}"
+            
+            # Haal popup op
+            r = session.get(detail_url, timeout=10)
+            detail_soup = BeautifulSoup(r.content, 'lxml')
+            
+            # Zoek naar IMO in inputs (vaak id="...txtImo")
+            # Of zoek naar de tekst "IMO:"
+            
+            # 1. Input veld check
+            for inp in detail_soup.find_all('input'):
+                if 'imo' in inp.get('name', '').lower() or 'imo' in inp.get('id', '').lower():
+                    val = inp.get('value', '').strip()
+                    if val and val.isdigit() and len(val) == 7:
+                        imo = val
+                        break
+            
+            # 2. Tekst check (Fallback)
+            if not imo:
+                # Zoek naar "IMO" gevolgd door 7 cijfers
+                m = re.search(r"IMO\D*(\d{7})", r.text, re.IGNORECASE)
+                if m:
+                    imo = m.group(1)
+                    
+            if imo:
+                logging.info(f" -> IMO Gevonden: {imo}")
+            else:
+                logging.info(" -> Geen IMO gevonden in details.")
+        else:
+            logging.info(" -> Geen schepen-detail link gevonden.")
+
+    except Exception as e:
+        logging.warning(f"Fout bij IMO scrapa: {e}")
+        
+    return imo
+
 def haal_bewegingen_direct_regex(session, reis_id):
-    """
-    Haalt de specifieke Bewegingen-pagina op voor één schip (Stateless GET).
-    Scant de ruwe HTML met regex naar MPET tijden.
-    """
+    """Haalt ETA/ATA op."""
     if not reis_id: return None
     try:
-        # Directe URL naar de detailpagina van DIT schip
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
         session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
-        
         r = session.get(url, timeout=20)
         html_text = r.text
         
-        # Regex scanner
         matches = []
-        
-        # Zoek naar Deurganckdok of MPET
-        # Pak de tekst die volgt (tot 200 chars)
         for m in re.finditer(r"(Deurganckdok|MPET)", html_text, re.IGNORECASE):
             snippet = html_text[m.end():m.end()+200]
-            
-            # Zoek datums in snippet (dd/mm/yyyy of dd/mm/yy)
-            # Tabelvolgorde is Locatie -> ETA -> RTA -> ATA
             dates = re.findall(r"(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2})", snippet)
-            if not dates:
-                dates = re.findall(r"(\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2})", snippet)
-                
-            if dates:
-                # Pak de laatste datum in de rij (ATA > RTA > ETA)
-                matches.append(dates[-1])
+            if not dates: dates = re.findall(r"(\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2})", snippet)
+            if dates: matches.append(dates[-1])
         
         if matches:
-            # Pak de datum van de LAATSTE rij in de tabel (meest recent)
             raw_time = matches[-1]
-            
-            # Clean format (dd/mm HH:MM)
             m = re.search(r"(\d{2}/\d{2})/(?:\d{4}|\d{2})\s+(\d{2}:\d{2})", raw_time)
             if m: return f"{m.group(1)} {m.group(2)}"
             return raw_time
-
         return None
-            
-    except Exception as e:
-        logging.error(f"Fout bij ophalen bewegingen {reis_id}: {e}")
-        return None
+    except: return None
 
 def parse_table_from_soup(soup):
     table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
     if not table: return []
-    
     cols = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
     res = []
-    
     for row in table.find_all('tr')[1:]: 
         cells = row.find_all('td')
         if not cells: continue
@@ -184,8 +209,6 @@ def parse_table_from_soup(soup):
                         if c: val = c['title']
                 if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
                 d[k] = val
-        
-        # ID FIX
         if row.has_attr('onclick'):
             m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
             if m: d['ReisId'] = m.group(1)
@@ -194,21 +217,17 @@ def parse_table_from_soup(soup):
              if l:
                  m = re.search(r'ReisId=(\d+)', l['href'])
                  if m: d['ReisId'] = m.group(1)
-        
         res.append(d)
     return res
 
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v104: Name Fix) ---")
-    
+    logging.info("--- Running haal_bestellingen_en_details (v105: IMO & Clean Links) ---")
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
     try:
-        # 1. GET
         resp = session.get(url, timeout=30)
         soup = BeautifulSoup(resp.content, 'lxml')
         
-        # Helper voor form
         def get_inputs(s):
             d = {}
             for i in s.find_all('input'):
@@ -216,23 +235,21 @@ def haal_bestellingen_en_details(session):
             if 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$betrokken']
             return d
 
-        # 2. Uncheck Eigen Reizen
+        # Uncheck
         d = get_inputs(soup)
         d['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken'
         d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_from$txtDate'] = ''
         d['ctl00$ContentPlaceHolder1$ctl01$select$rzn_lbs_vertrektijd_to$txtDate'] = ''
-        
         resp = session.post(url, data=d, timeout=30)
         soup = BeautifulSoup(resp.content, 'lxml')
         time.sleep(1)
         
-        # 3. Zoeken
+        # Zoeken
         d = get_inputs(soup)
         d['ctl00$ContentPlaceHolder1$ctl01$select$richting'] = '/'
         d['ctl00$ContentPlaceHolder1$ctl01$select$btnSearch'] = 'Zoeken'
         if 'ctl00$ContentPlaceHolder1$ctl01$select$agt_naam' in d: del d['ctl00$ContentPlaceHolder1$ctl01$select$agt_naam']
         d['__EVENTTARGET'] = ''
-        
         resp = session.post(url, data=d, timeout=30)
         soup = BeautifulSoup(resp.content, 'lxml')
         
@@ -240,9 +257,56 @@ def haal_bestellingen_en_details(session):
         page = 1
         max_pages = 15
         
+        # Tijdsgrenzen voor fetch optimalisatie
+        brussels_tz = pytz.timezone('Europe/Brussels')
+        nu = datetime.now(brussels_tz)
+        grens_in = nu + timedelta(hours=8)
+        grens_in_verleden = nu - timedelta(hours=8)
+        
         while page <= max_pages:
             logging.info(f"Pagina {page} verwerken...")
             current_ships = parse_table_from_soup(soup)
+            
+            for s in current_ships:
+                # Is het MPET?
+                is_mpet = False
+                e = s.get('Entry Point', '').lower()
+                x = s.get('Exit Point', '').lower()
+                if 'mpet' in e or 'mpet' in x: is_mpet = True
+                
+                # Datum check
+                in_window = False
+                if s.get('Type') == 'I':
+                    try:
+                        bt = parse_besteltijd(s.get('Besteltijd'))
+                        if bt.year > 1970:
+                            bt_loc = brussels_tz.localize(bt)
+                            if grens_in_verleden <= bt_loc <= grens_in: in_window = True
+                    except: pass
+                
+                # Fetch details (PostBack) als relevant
+                if is_mpet and in_window and s.get('ReisId'):
+                    logging.info(f"Relevant: {s['Schip']}. Details ophalen...")
+                    try:
+                        det_data = get_inputs(soup)
+                        det_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
+                        det_data['__EVENTARGUMENT'] = f'value={s["ReisId"]};text='
+                        
+                        resp = session.post(url, data=det_data, timeout=20)
+                        
+                        # 1. Haal IMO (uit de nu geladen details)
+                        soup_with_details = BeautifulSoup(resp.content, 'lxml')
+                        imo = haal_imo_nummer(session, soup_with_details)
+                        if imo: s['IMO'] = imo
+
+                        # 2. Haal ETA (Direct)
+                        eta = haal_bewegingen_direct_regex(session, s.get('ReisId'))
+                        if eta: s['Details_ETA'] = eta
+                        
+                        soup = soup_with_details # Update state
+                    except Exception as ex:
+                        logging.error(f"Fout bij details: {ex}")
+
             all_ships.extend(current_ships)
             
             page += 1
@@ -261,7 +325,6 @@ def haal_bestellingen_en_details(session):
             
         logging.info(f"Totaal {len(all_ships)} schepen gevonden.")
         return all_ships
-
     except Exception as e:
         logging.error(f"Scrape error: {e}")
         return []
@@ -279,25 +342,22 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     grens_in = nu + timedelta(hours=8)
     grens_verplaatsing = nu + timedelta(hours=8)
     
-    details_fetched = 0
-
     for b in bestellingen:
-        # --- VESSELFINDER URL FIX ---
+        # --- LINK GENERATIE (IMO > NAAM) ---
         schip_naam = b.get('Schip', '')
         
-        # 1. Vervang harde spaties (veroorzaker van %C2%A0)
-        clean_name = schip_naam.replace('\xa0', ' ')
-        # 2. Verwijder (d)
-        clean_name = re.sub(r'\s*\(d\)\s*', '', clean_name, flags=re.IGNORECASE)
-        # 3. Verwijder overtollige spaties
-        clean_name = " ".join(clean_name.split())
-        
         if b.get('IMO'):
+             # Direct naar IMO
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={b['IMO']}"
         else:
+             # Fallback Naam Schoonmaak
+             # 1. Vervang harde spaties en andere vreemde whitespace door normale spaties
+             clean_name = re.sub(r'[\s\xa0]+', ' ', schip_naam)
+             # 2. Verwijder (d) case insensitive
+             clean_name = re.sub(r'\s*\(d\)\s*', '', clean_name, flags=re.IGNORECASE).strip()
+             
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
 
-        # MPET Filter
         if not is_mpet_ship(b): continue
         
         stype = b.get("Type")
@@ -311,19 +371,10 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         
         b['berekende_eta'] = 'N/A'
         
-        # INKOMEND
         if stype == 'I':
              if grens_in_verleden <= bt <= grens_in:
-                # 1. Directe Detail Fetch
-                rid = b.get('ReisId')
-                if rid:
-                    time.sleep(0.2) 
-                    t = haal_bewegingen_direct_regex(session, rid)
-                    if t: 
-                        b['berekende_eta'] = f"Bewegingen: {t}"
-                        details_fetched += 1
-                
-                # 2. Fallback RTA
+                if 'Details_ETA' in b:
+                    b['berekende_eta'] = f"Bewegingen: {b['Details_ETA']}"
                 if b['berekende_eta'] == 'N/A':
                     rta = b.get('RTA', '').strip()
                     if rta:
@@ -332,8 +383,6 @@ def filter_snapshot_schepen(bestellingen, session, nu):
                             if "SA/ZV" in rta or "CP" in rta: b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
                             else: b['berekende_eta'] = f"RTA: {m.group(1)}"
                         else: b['berekende_eta'] = f"RTA: {rta[:20]}"
-                
-                # 3. Calc
                 if b['berekende_eta'] == 'N/A':
                      eta = bt + timedelta(hours=6)
                      b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
@@ -351,58 +400,30 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         elif diff < 3600: b['status_flag'] = 'warning_soon'
         elif diff < 5400: b['status_flag'] = 'due_soon'
 
-    logging.info(f"Totaal details opgehaald voor {details_fetched} inkomende schepen.")
-
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-def load_state_for_comparison():
-    try:
-        bestellingen_obj = KeyValueStore.query.get('bestellingen')
-        return {"bestellingen": bestellingen_obj.value if bestellingen_obj else []}
-    except Exception as e:
-        return {"bestellingen": []}
-
-def save_state_for_comparison(state):
-    try:
-        key = 'bestellingen'
-        value = state.get(key)
-        if value is None: return 
-        obj = KeyValueStore.query.get(key)
-        if obj: 
-            obj.value = value
-        else:
-            obj = KeyValueStore(key=key, value=value)
-            db.session.add(obj)
-    except Exception as e:
-        db.session.rollback()
-
-def vergelijk_bestellingen(oude, nieuwe):
-    return []
-
-def format_wijzigingen_email(w): 
-    return ""
+def load_state_for_comparison(): return {}
+def save_state_for_comparison(s): pass
+def vergelijk_bestellingen(a, b): return []
+def format_wijzigingen_email(w): return ""
 
 # --- MAIN ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
         return
-    
     session = requests.Session()
     if not login(session):
         logging.error("Login mislukt.")
         return
-    
     nieuwe = haal_bestellingen_en_details(session)
     if not nieuwe:
         logging.error("Geen bestellingen.")
         return
-    
     logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
     snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
-    
     try:
         s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
         db.session.add(s)
@@ -416,7 +437,6 @@ def main():
     except Exception as e:
          logging.error(f"DB Error: {e}")
          db.session.rollback()
-
     save_state_for_comparison({"bestellingen": nieuwe})
     logging.info("--- Run Voltooid ---")
 
