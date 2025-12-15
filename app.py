@@ -71,12 +71,19 @@ except Exception as e:
 # --- HELPER FUNCTIES ---
 
 def parse_besteltijd(besteltijd_str):
+    """Probeert datums te parsen, tolerant voor formaten."""
     DEFAULT_TIME = datetime(1970, 1, 1) 
     if not besteltijd_str: return DEFAULT_TIME
-    try:
-        cleaned_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
-        return datetime.strptime(cleaned_str, "%d/%m/%y %H:%M")
-    except ValueError: return DEFAULT_TIME
+    
+    clean_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
+    
+    # Probeer verschillende formaten
+    for fmt in ["%d/%m/%y %H:%M", "%d/%m/%Y %H:%M"]:
+        try:
+            return datetime.strptime(clean_str, fmt)
+        except ValueError:
+            continue
+    return DEFAULT_TIME
 
 def login(session):
     try:
@@ -116,29 +123,23 @@ def get_form_inputs(soup):
 
 def scan_text_for_eta(text):
     """Zoekt met regex naar MPET/Deurganckdok + Tijd in ruwe tekst."""
-    # Pattern: Zoek 'Deurganckdok' of 'MPET', gevolgd door karakters, en dan een tijd.
-    # We pakken de LAATSTE match in de tekst, want dat is vaak de aankomst.
-    
-    # Zoek alle tijden die bij de locatie staan
-    # Voorbeeld in HTML: <td>Deurganckdok...</td>...<td>04/12/2025 15:40</td>
+    # VERBETERDE REGEX: Zoek alleen datums die BINNEN 200 chars na de locatie staan.
+    # Dit voorkomt dat we een datum uit de footer pakken die bij een locatie in de header hoort.
     
     matches = []
     # Vind posities van locatie
     for m in re.finditer(r"(Deurganckdok|MPET)", text, re.IGNORECASE):
-        # Pak stuk tekst na de match
-        snippet = text[m.end():m.end()+1500] 
+        # Pak een KLEIN stuk tekst na de match (max 200 tekens is genoeg voor een tabelrij)
+        snippet = text[m.end():m.end()+200] 
         
         # Zoek datums in snippet
         dates = re.findall(r"(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2})", snippet)
         if dates:
-            # Pak de eerste datum die we tegenkomen na de locatie
-            # Of juist de laatste? In de tabel is het vaak Locatie | ETA | RTA | ATA
-            # ATA is het belangrijkst, die staat meestal rechts (dus later in de HTML).
-            # Laten we de laatste pakken die gevonden wordt in de nabijheid.
+            # Als er meerdere tijden in de rij staan (ETA, RTA, ATA), pak de laatste (vaak ATA/RTA)
             matches.append(dates[-1])
             
     if matches:
-        # Pak de allerlaatste gevonden datum van alle matches (onderste rij)
+        # Pak de allerlaatste gevonden datum van alle matches (onderste rij in tabel)
         raw_time = matches[-1]
         
         # Format cleanen (jaar weg)
@@ -148,8 +149,38 @@ def scan_text_for_eta(text):
         
     return None
 
+def parse_table_from_soup(soup):
+    table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
+    if not table: return []
+    cols = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
+    res = []
+    for row in table.find_all('tr')[1:]: 
+        cells = row.find_all('td')
+        if not cells: continue
+        d = {}
+        for k, i in cols.items():
+            if i < len(cells):
+                val = cells[i].get_text(strip=True)
+                if k == "RTA" and not val:
+                    if cells[i].has_attr('title'): val = cells[i]['title']
+                    else:
+                        c = cells[i].find(lambda t: t.has_attr('title'))
+                        if c: val = c['title']
+                if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
+                d[k] = val
+        if row.has_attr('onclick'):
+            m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
+            if m: d['ReisId'] = m.group(1)
+        if 'ReisId' not in d:
+             l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
+             if l:
+                 m = re.search(r'ReisId=(\d+)', l['href'])
+                 if m: d['ReisId'] = m.group(1)
+        res.append(d)
+    return res
+
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v97: Integrated Flow) ---")
+    logging.info("--- Running haal_bestellingen_en_details (v98: Stricter Regex & Fixes) ---")
     
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
@@ -233,7 +264,7 @@ def haal_bestellingen_en_details(session):
                         
                         # Als niet gevonden, probeer tab switch (optioneel, maar veilig)
                         if not eta:
-                             logging.info(" -> Tab switch proberen...")
+                             # logging.info(" -> Tab switch proberen...")
                              soup_temp = BeautifulSoup(resp.content, 'lxml')
                              tab_data = get_form_inputs(soup_temp)
                              tab_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$data$tabContainer'
@@ -275,38 +306,8 @@ def haal_bestellingen_en_details(session):
         logging.error(f"General error: {e}")
         return []
 
-def parse_table_from_soup(soup):
-    # ... (standaard parse functie, ongewijzigd) ...
-    table = soup.find('table', id='ctl00_ContentPlaceHolder1_ctl01_list_gv')
-    if not table: return []
-    cols = {"Type": 0, "Besteltijd": 5, "ETA/ETD": 6, "RTA": 7, "Loods": 10, "Schip": 11, "Entry Point": 20, "Exit Point": 21}
-    res = []
-    for row in table.find_all('tr')[1:]: 
-        cells = row.find_all('td')
-        if not cells: continue
-        d = {}
-        for k, i in cols.items():
-            if i < len(cells):
-                val = cells[i].get_text(strip=True)
-                if k == "RTA" and not val:
-                    if cells[i].has_attr('title'): val = cells[i]['title']
-                    else:
-                        c = cells[i].find(lambda t: t.has_attr('title'))
-                        if c: val = c['title']
-                if k=="Loods" and "[Loods]" in val: val="Loods werd toegewezen"
-                d[k] = val
-        if row.has_attr('onclick'):
-            m = re.search(r"value=['\"]?(\d+)['\"]?", row['onclick'])
-            if m: d['ReisId'] = m.group(1)
-        if 'ReisId' not in d:
-             l = row.find('a', href=re.compile(r'Reisplan\.aspx'))
-             if l:
-                 m = re.search(r'ReisId=(\d+)', l['href'])
-                 if m: d['ReisId'] = m.group(1)
-        res.append(d)
-    return res
-
 def filter_snapshot_schepen(bestellingen, nu):
+    # CRASH FIX: Removed 'session' argument here as it's handled in the scraper now
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
     grens_uit = nu + timedelta(hours=16)
@@ -315,13 +316,14 @@ def filter_snapshot_schepen(bestellingen, nu):
     grens_verplaatsing = nu + timedelta(hours=8)
     
     for b in bestellingen:
-        # MPET Check al gedaan in scrape loop, maar dubbelcheck voor output structuur
-        entry = b.get('Entry Point', '').lower()
-        exit_p = b.get('Exit Point', '').lower()
-        if 'mpet' not in entry and 'mpet' not in exit_p: continue
+        # 1. MPET Filter check (dubbelcheck, maar al gedaan in scraper voor efficiency)
+        e = b.get('Entry Point', '').lower()
+        x = b.get('Exit Point', '').lower()
+        if 'mpet' not in e and 'mpet' not in x: continue
         
         stype = b.get("Type")
         besteltijd_str = b.get('Besteltijd')
+        
         try:
             bt = parse_besteltijd(besteltijd_str)
             if bt.year == 1970: continue 
@@ -343,7 +345,7 @@ def filter_snapshot_schepen(bestellingen, nu):
                     if rta:
                         m = re.search(r"(SA/ZV|Deurganckdok)\s*(\d{2}/\d{2}\s+\d{2}:\d{2})", rta, re.IGNORECASE)
                         if m: b['berekende_eta'] = f"RTA (CP): {m.group(2)}"
-                        else: b['berekende_eta'] = f"RTA: {rta}"
+                        else: b['berekende_eta'] = f"RTA: {rta[:20]}"
                 
                 # 3. Calc Fallback
                 if b['berekende_eta'] == 'N/A':
@@ -356,7 +358,7 @@ def filter_snapshot_schepen(bestellingen, nu):
              if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
         elif stype == 'V':
              if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
-             
+
         # Status
         b['status_flag'] = 'normal'
         diff = (bt - nu).total_seconds()
@@ -367,10 +369,17 @@ def filter_snapshot_schepen(bestellingen, nu):
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
+def load_state_for_comparison(): return {}
+def save_state_for_comparison(s): pass
+def vergelijk_bestellingen(a, b): return []
+def format_wijzigingen_email(w): return ""
+
+# --- MAIN ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
         return
+    
     session = requests.Session()
     if not login(session):
         logging.error("Login mislukt.")
@@ -385,8 +394,8 @@ def main():
     logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
     
-    # 2. Filter en sorteer voor weergave
-    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu) # session param niet meer nodig, maar voor compatibiliteit
+    # 2. Filter en sorteer (CRASH FIX: 2 args)
+    snapshot_data = filter_snapshot_schepen(nieuwe, nu)
     
     try:
         s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
