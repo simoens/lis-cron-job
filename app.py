@@ -112,37 +112,52 @@ def login(session):
 # --- CORE SCRAPING LOGIC ---
 
 def get_form_inputs(soup):
-    """Haalt alle inputs op voor PostBack."""
     d = {}
     for i in soup.find_all('input'):
         if i.get('name'): d[i['name']] = i.get('value', '')
-    # Checkbox 'betrokken' weg
     if 'ctl00$ContentPlaceHolder1$ctl01$select$betrokken' in d: 
         del d['ctl00$ContentPlaceHolder1$ctl01$select$betrokken']
     return d
 
-def scan_text_for_eta(text):
-    """Zoekt met regex naar MPET/Deurganckdok + Tijd in ruwe tekst."""
-    # VERBETERDE REGEX: Zoek alleen datums die BINNEN 200 chars na de locatie staan.
-    # Dit voorkomt dat we een datum uit de footer pakken die bij een locatie in de header hoort.
+def scan_text_for_eta_strict(text):
+    """
+    Zoekt STRIKT binnen de bewegingen-tabel naar MPET/Deurganckdok tijden.
+    """
+    # 1. Zoek het begin van de bewegingen tabel om ruis te filteren
+    # We zoeken naar de ID string die in de HTML van de tabel zit
+    table_marker = "ctl00_ContentPlaceHolder1_ctl01_data_tabContainer_pnl2_tabpage_bewegingen_list_gv"
+    start_pos = text.find(table_marker)
+    
+    if start_pos == -1:
+        # Fallback: zoek naar 'Locatie' en 'ETA' dicht bij elkaar
+        match_header = re.search(r"Locatie.*?ETA.*?ATA", text)
+        if match_header:
+            start_pos = match_header.start()
+        else:
+            return None # Geen tabel, dus stop meteen (voorkomt foute matches)
+
+    # Werk alleen met de tekst VANAF de tabel
+    relevant_text = text[start_pos:]
     
     matches = []
-    # Vind posities van locatie
-    for m in re.finditer(r"(Deurganckdok|MPET)", text, re.IGNORECASE):
-        # Pak een KLEIN stuk tekst na de match (max 200 tekens is genoeg voor een tabelrij)
-        snippet = text[m.end():m.end()+200] 
+    # Zoek naar MPET/Deurganckdok
+    # Pattern: Locatie ... (binnen 150 chars) ... Datum
+    for m in re.finditer(r"(Deurganckdok|MPET)", relevant_text, re.IGNORECASE):
+        # Pak een kleine snippet NA de locatie (max 150 chars = genoeg voor datum, kort genoeg om op de regel te blijven)
+        snippet = relevant_text[m.end():m.end()+150]
         
-        # Zoek datums in snippet
+        # Zoek datums
         dates = re.findall(r"(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2})", snippet)
+        
         if dates:
-            # Als er meerdere tijden in de rij staan (ETA, RTA, ATA), pak de laatste (vaak ATA/RTA)
+            # Als we datums vinden op deze regel, pak de laatste (ATA staat rechts van ETA)
             matches.append(dates[-1])
             
     if matches:
-        # Pak de allerlaatste gevonden datum van alle matches (onderste rij in tabel)
+        # Pak de allerlaatste rij die we vonden (onderste rij in tabel)
         raw_time = matches[-1]
         
-        # Format cleanen (jaar weg)
+        # Format cleanen
         m = re.search(r"(\d{2}/\d{2})/\d{4}\s+(\d{2}:\d{2})", raw_time)
         if m: return f"{m.group(1)} {m.group(2)}"
         return raw_time
@@ -180,16 +195,15 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v98: Stricter Regex & Fixes) ---")
+    logging.info("--- Running haal_bestellingen_en_details (v99: Strict Table Context) ---")
     
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
-    # Tijdfilters instellen voor "Lazy Loading" check
+    # Tijdfilters voor Lazy Load
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu = datetime.now(brussels_tz)
-    grens_uit = nu + timedelta(hours=16)
-    grens_in_verleden = nu - timedelta(hours=8)
     grens_in = nu + timedelta(hours=8)
+    grens_in_verleden = nu - timedelta(hours=8)
     
     try:
         # 1. GET
@@ -218,7 +232,7 @@ def haal_bestellingen_en_details(session):
         
         all_ships = []
         page = 1
-        max_pages = 15 # Ruime marge
+        max_pages = 15
         
         while page <= max_pages:
             logging.info(f"Pagina {page} verwerken...")
@@ -226,26 +240,25 @@ def haal_bestellingen_en_details(session):
             # Lees tabel
             current_ships = parse_table_from_soup(soup)
             
-            # --- INTEGRATIE: HAAL DETAILS DIRECT OP INDIEN RELEVANT ---
+            # --- HAAL DETAILS DIRECT OP ---
             for s in current_ships:
                 
-                # Check 1: Is het MPET?
+                # Check 1: MPET
                 is_mpet = False
                 e = s.get('Entry Point', '').lower()
                 x = s.get('Exit Point', '').lower()
                 if 'mpet' in e or 'mpet' in x: is_mpet = True
                 
-                # Check 2: Valt het binnen tijdvenster?
+                # Check 2: Tijdvenster (alleen inkomend)
+                stype = s.get('Type')
                 in_window = False
-                try:
-                    bt = parse_besteltijd(s.get('Besteltijd'))
-                    if bt.year > 1970:
-                        bt_loc = brussels_tz.localize(bt)
-                        stype = s.get('Type')
-                        if stype == 'I' and (grens_in_verleden <= bt_loc <= grens_in): in_window = True
-                        elif stype == 'U' and (nu <= bt_loc <= grens_uit): in_window = True
-                        elif stype == 'V' and (nu <= bt_loc <= grens_in): in_window = True
-                except: pass
+                if stype == 'I':
+                    try:
+                        bt = parse_besteltijd(s.get('Besteltijd'))
+                        if bt.year > 1970:
+                            bt_loc = brussels_tz.localize(bt)
+                            if grens_in_verleden <= bt_loc <= grens_in: in_window = True
+                    except: pass
                 
                 # Als Relevant -> Haal details via PostBack
                 if is_mpet and in_window and s.get('ReisId'):
@@ -259,10 +272,10 @@ def haal_bestellingen_en_details(session):
                         
                         resp = session.post(url, data=det_data, timeout=20)
                         
-                        # Scan RAW response voor ETA
-                        eta = scan_text_for_eta(resp.text)
+                        # Scan RAW response voor ETA (MET STRICTE CHECK)
+                        eta = scan_text_for_eta_strict(resp.text)
                         
-                        # Als niet gevonden, probeer tab switch (optioneel, maar veilig)
+                        # Als niet gevonden, probeer tab switch
                         if not eta:
                              # logging.info(" -> Tab switch proberen...")
                              soup_temp = BeautifulSoup(resp.content, 'lxml')
@@ -270,13 +283,12 @@ def haal_bestellingen_en_details(session):
                              tab_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$data$tabContainer'
                              tab_data['__EVENTARGUMENT'] = '2' # Bewegingen tab
                              resp = session.post(url, data=tab_data, timeout=20)
-                             eta = scan_text_for_eta(resp.text)
+                             eta = scan_text_for_eta_strict(resp.text)
 
                         if eta:
                             s['Details_ETA'] = eta
                             logging.info(f" -> ETA Gevonden: {eta}")
-                            
-                        # BELANGRIJK: Update soup met de laatste response om state te behouden!
+                        
                         soup = BeautifulSoup(resp.content, 'lxml')
                         
                     except Exception as ex:
@@ -306,8 +318,7 @@ def haal_bestellingen_en_details(session):
         logging.error(f"General error: {e}")
         return []
 
-def filter_snapshot_schepen(bestellingen, nu):
-    # CRASH FIX: Removed 'session' argument here as it's handled in the scraper now
+def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
     
     grens_uit = nu + timedelta(hours=16)
@@ -316,7 +327,7 @@ def filter_snapshot_schepen(bestellingen, nu):
     grens_verplaatsing = nu + timedelta(hours=8)
     
     for b in bestellingen:
-        # 1. MPET Filter check (dubbelcheck, maar al gedaan in scraper voor efficiency)
+        # 1. MPET Filter check
         e = b.get('Entry Point', '').lower()
         x = b.get('Exit Point', '').lower()
         if 'mpet' not in e and 'mpet' not in x: continue
@@ -385,7 +396,6 @@ def main():
         logging.error("Login mislukt.")
         return
     
-    # 1. Scrape (Inclusief Details!)
     nieuwe = haal_bestellingen_en_details(session)
     if not nieuwe:
         logging.error("Geen bestellingen.")
@@ -393,9 +403,7 @@ def main():
     
     logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
-    
-    # 2. Filter en sorteer (CRASH FIX: 2 args)
-    snapshot_data = filter_snapshot_schepen(nieuwe, nu)
+    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
     
     try:
         s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
