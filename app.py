@@ -203,7 +203,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v107: Full App) ---")
+    logging.info("--- Running haal_bestellingen_en_details (v108: History Fix) ---")
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
     brussels_tz = pytz.timezone('Europe/Brussels')
@@ -383,9 +383,8 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-# --- 4. WIJZIGINGEN DETECTIE (HERSTELD) ---
+# --- 4. WIJZIGINGEN DETECTIE ---
 def filter_dubbele_schepen(bestellingen):
-    """Zorgt dat we per schip de meest recente update pakken als het er dubbel in staat."""
     unieke_schepen = {}
     for b in bestellingen:
         schip_naam_raw = b.get('Schip')
@@ -398,9 +397,9 @@ def filter_dubbele_schepen(bestellingen):
     return list(unieke_schepen.values())
 
 def vergelijk_bestellingen(oude, nieuwe):
-    """Vergelijkt oude en nieuwe lijst op wijzigingen."""
     oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(oude) if b.get('Schip')}
     nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
+    
     oude_names = set(oude_dict.keys())
     nieuwe_names = set(nieuwe_dict.keys())
     
