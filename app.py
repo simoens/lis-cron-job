@@ -118,13 +118,8 @@ def login(session):
 # --- DE KERN: IMO & BEWEGINGEN ---
 
 def haal_imo_nummer(session, soup_met_details):
-    """
-    Zoekt de link naar scheepsdetails in de HTML en haalt het IMO nummer op.
-    """
     imo = None
     try:
-        # Zoek naar het ID in de 'openEditDialog' functie
-        # Voorbeeld: ...openEditDialog('/Lis/Framework/DcDataPage.aspx?control=schepen&ID=536047618'...
         html_str = str(soup_met_details)
         match = re.search(r"DcDataPage\.aspx\?control=schepen.*?ID=(\d+)", html_str)
         
@@ -132,34 +127,22 @@ def haal_imo_nummer(session, soup_met_details):
             schepen_db_id = match.group(1)
             detail_url = f"https://lis.loodswezen.be/Lis/Framework/DcDataPage.aspx?control=schepen&ID={schepen_db_id}"
             
-            # Haal popup op
             r = session.get(detail_url, timeout=10)
-            detail_soup = BeautifulSoup(r.content, 'lxml')
+            imo_soup = BeautifulSoup(r.content, 'lxml')
             
-            # Zoek naar IMO in inputs (vaak id="...txtImo")
-            # Of zoek naar de tekst "IMO:"
-            
-            # 1. Input veld check
-            for inp in detail_soup.find_all('input'):
+            for inp in imo_soup.find_all('input'):
                 if 'imo' in inp.get('name', '').lower() or 'imo' in inp.get('id', '').lower():
                     val = inp.get('value', '').strip()
                     if val and val.isdigit() and len(val) == 7:
                         imo = val
                         break
             
-            # 2. Tekst check (Fallback)
             if not imo:
-                # Zoek naar "IMO" gevolgd door 7 cijfers
-                m = re.search(r"IMO\D*(\d{7})", r.text, re.IGNORECASE)
-                if m:
-                    imo = m.group(1)
+                text_matches = re.findall(r"IMO\s*[:\.]?\s*(\d{7})", r.text, re.IGNORECASE)
+                if text_matches:
+                    imo = text_matches[0]
                     
-            if imo:
-                logging.info(f" -> IMO Gevonden: {imo}")
-            else:
-                logging.info(" -> Geen IMO gevonden in details.")
-        else:
-            logging.info(" -> Geen schepen-detail link gevonden.")
+            if imo: logging.info(f" -> IMO Gevonden: {imo}")
 
     except Exception as e:
         logging.warning(f"Fout bij IMO scrapa: {e}")
@@ -167,7 +150,6 @@ def haal_imo_nummer(session, soup_met_details):
     return imo
 
 def haal_bewegingen_direct_regex(session, reis_id):
-    """Haalt ETA/ATA op."""
     if not reis_id: return None
     try:
         url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
@@ -221,7 +203,7 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v105: IMO & Clean Links) ---")
+    logging.info("--- Running haal_bestellingen_en_details (v106: History Restored) ---")
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
     try:
@@ -257,7 +239,6 @@ def haal_bestellingen_en_details(session):
         page = 1
         max_pages = 15
         
-        # Tijdsgrenzen voor fetch optimalisatie
         brussels_tz = pytz.timezone('Europe/Brussels')
         nu = datetime.now(brussels_tz)
         grens_in = nu + timedelta(hours=8)
@@ -268,13 +249,11 @@ def haal_bestellingen_en_details(session):
             current_ships = parse_table_from_soup(soup)
             
             for s in current_ships:
-                # Is het MPET?
                 is_mpet = False
                 e = s.get('Entry Point', '').lower()
                 x = s.get('Exit Point', '').lower()
                 if 'mpet' in e or 'mpet' in x: is_mpet = True
                 
-                # Datum check
                 in_window = False
                 if s.get('Type') == 'I':
                     try:
@@ -284,26 +263,23 @@ def haal_bestellingen_en_details(session):
                             if grens_in_verleden <= bt_loc <= grens_in: in_window = True
                     except: pass
                 
-                # Fetch details (PostBack) als relevant
                 if is_mpet and in_window and s.get('ReisId'):
-                    logging.info(f"Relevant: {s['Schip']}. Details ophalen...")
+                    logging.info(f"Relevant: {s['Schip']}. Details & IMO ophalen...")
                     try:
                         det_data = get_inputs(soup)
                         det_data['__EVENTTARGET'] = 'ctl00$ContentPlaceHolder1$ctl01$list$itemSelectHandler'
                         det_data['__EVENTARGUMENT'] = f'value={s["ReisId"]};text='
                         
                         resp = session.post(url, data=det_data, timeout=20)
-                        
-                        # 1. Haal IMO (uit de nu geladen details)
                         soup_with_details = BeautifulSoup(resp.content, 'lxml')
+                        
                         imo = haal_imo_nummer(session, soup_with_details)
                         if imo: s['IMO'] = imo
 
-                        # 2. Haal ETA (Direct)
                         eta = haal_bewegingen_direct_regex(session, s.get('ReisId'))
                         if eta: s['Details_ETA'] = eta
                         
-                        soup = soup_with_details # Update state
+                        soup = soup_with_details
                     except Exception as ex:
                         logging.error(f"Fout bij details: {ex}")
 
@@ -325,6 +301,7 @@ def haal_bestellingen_en_details(session):
             
         logging.info(f"Totaal {len(all_ships)} schepen gevonden.")
         return all_ships
+
     except Exception as e:
         logging.error(f"Scrape error: {e}")
         return []
@@ -342,20 +319,15 @@ def filter_snapshot_schepen(bestellingen, session, nu):
     grens_in = nu + timedelta(hours=8)
     grens_verplaatsing = nu + timedelta(hours=8)
     
+    details_fetched = 0
+
     for b in bestellingen:
-        # --- LINK GENERATIE (IMO > NAAM) ---
         schip_naam = b.get('Schip', '')
-        
         if b.get('IMO'):
-             # Direct naar IMO
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={b['IMO']}"
         else:
-             # Fallback Naam Schoonmaak
-             # 1. Vervang harde spaties en andere vreemde whitespace door normale spaties
              clean_name = re.sub(r'[\s\xa0]+', ' ', schip_naam)
-             # 2. Verwijder (d) case insensitive
              clean_name = re.sub(r'\s*\(d\)\s*', '', clean_name, flags=re.IGNORECASE).strip()
-             
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
 
         if not is_mpet_ship(b): continue
@@ -400,30 +372,130 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         elif diff < 3600: b['status_flag'] = 'warning_soon'
         elif diff < 5400: b['status_flag'] = 'due_soon'
 
+    logging.info(f"Totaal details opgehaald voor {details_fetched} inkomende schepen.")
+
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-def load_state_for_comparison(): return {}
-def save_state_for_comparison(s): pass
-def vergelijk_bestellingen(a, b): return []
-def format_wijzigingen_email(w): return ""
+# --- 4. WIJZIGINGEN DETECTIE (HERSTELD) ---
+def filter_dubbele_schepen(bestellingen):
+    """Zorgt dat we per schip de meest recente update pakken als het er dubbel in staat."""
+    unieke_schepen = {}
+    for b in bestellingen:
+        schip_naam_raw = b.get('Schip')
+        if not schip_naam_raw: continue
+        schip_naam_gekuist = re.sub(r'\s*\(d\)\s*$', '', schip_naam_raw).strip()
+        
+        if schip_naam_gekuist in unieke_schepen:
+            # Als we hem al hebben, check of deze nieuwer/beter is?
+            # Voor nu overschrijven we gewoon, de lijst volgorde is meestal chronologisch of relevant
+            unieke_schepen[schip_naam_gekuist] = b
+        else:
+            unieke_schepen[schip_naam_gekuist] = b
+    return list(unieke_schepen.values())
+
+def vergelijk_bestellingen(oude, nieuwe):
+    """Vergelijkt oude en nieuwe lijst op wijzigingen."""
+    oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(oude) if b.get('Schip')}
+    nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
+    
+    oude_schepen_namen = set(oude_dict.keys())
+    nieuwe_schepen_namen = set(nieuwe_dict.keys())
+    
+    wijzigingen = []
+    
+    # Nieuwe schepen
+    for schip_naam in (nieuwe_schepen_namen - oude_schepen_namen):
+        # Check of relevant
+        if is_mpet_ship(nieuwe_dict[schip_naam]):
+            wijzigingen.append({'Schip': schip_naam, 'status': 'NIEUW', 'details': nieuwe_dict[schip_naam]})
+            
+    # Wijzigingen
+    for schip_naam in (nieuwe_schepen_namen.intersection(oude_schepen_namen)):
+        n_best = nieuwe_dict[schip_naam]
+        o_best = oude_dict[schip_naam]
+        
+        if not is_mpet_ship(n_best): continue
+        
+        diff = {}
+        for k in ['Besteltijd', 'Loods', 'RTA', 'berekende_eta']:
+            if n_best.get(k) != o_best.get(k):
+                diff[k] = {'oud': o_best.get(k), 'nieuw': n_best.get(k)}
+                
+        if diff:
+            wijzigingen.append({'Schip': schip_naam, 'status': 'GEWIJZIGD', 'wijzigingen': diff, 'type': n_best.get('Type')})
+            
+    return wijzigingen
+
+def format_wijzigingen_email(wijzigingen):
+    """Formatteert wijzigingen voor het logboek."""
+    body = []
+    for w in wijzigingen:
+        s_naam = w.get('Schip')
+        status = w.get('status')
+        if status == 'NIEUW':
+            d = w.get('details', {})
+            body.append(f"+++ NIEUW: {s_naam} ({d.get('Type')})\n - Tijd: {d.get('Besteltijd')}")
+        elif status == 'GEWIJZIGD':
+            line = f"^^^ WIJZIGING: {s_naam}"
+            for k, v in w['wijzigingen'].items():
+                line += f"\n - {k}: '{v['oud']}' -> '{v['nieuw']}'"
+            body.append(line)
+    return "\n\n".join(body)
+
+# --- DATABASE LOAD/SAVE HERSTELD ---
+def load_state_for_comparison():
+    try:
+        bestellingen_obj = KeyValueStore.query.get('bestellingen')
+        if bestellingen_obj and bestellingen_obj.value:
+            return bestellingen_obj.value
+    except Exception as e:
+        logging.error(f"DB Load error: {e}")
+    return []
+
+def save_state_for_comparison(data):
+    try:
+        # We slaan alleen de lijst op
+        schepen = data.get("bestellingen", [])
+        
+        obj = KeyValueStore.query.get('bestellingen')
+        if not obj:
+            obj = KeyValueStore(key='bestellingen', value=schepen)
+            db.session.add(obj)
+        else:
+            obj.value = schepen
+        db.session.commit()
+    except Exception as e:
+        logging.error(f"DB Save error: {e}")
+        db.session.rollback()
 
 # --- MAIN ---
 def main():
     if not all([USER, PASS]):
         logging.critical("FATAL: Geen user/pass!")
         return
+    
+    # 1. Load old state
+    oude_bestellingen = load_state_for_comparison()
+    
     session = requests.Session()
     if not login(session):
         logging.error("Login mislukt.")
         return
-    nieuwe = haal_bestellingen_en_details(session)
-    if not nieuwe:
+    
+    # 2. Scrape New
+    nieuwe_bestellingen = haal_bestellingen_en_details(session)
+    if not nieuwe_bestellingen:
         logging.error("Geen bestellingen.")
         return
+    
     logging.info("Snapshot genereren...")
     nu = datetime.now(pytz.timezone('Europe/Brussels'))
-    snapshot_data = filter_snapshot_schepen(nieuwe, session, nu)
+    
+    # 3. Filter voor Dashboard View
+    snapshot_data = filter_snapshot_schepen(nieuwe_bestellingen, session, nu)
+    
+    # 4. Save Snapshot
     try:
         s = Snapshot(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), content_data=snapshot_data)
         db.session.add(s)
@@ -437,7 +509,29 @@ def main():
     except Exception as e:
          logging.error(f"DB Error: {e}")
          db.session.rollback()
-    save_state_for_comparison({"bestellingen": nieuwe})
+
+    # 5. Detect Changes & Save History
+    if oude_bestellingen:
+        wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe_bestellingen)
+        if wijzigingen:
+            log_text = format_wijzigingen_email(wijzigingen)
+            if log_text:
+                # Save to DetectedChange
+                dc = DetectedChange(timestamp=nu.astimezone(pytz.utc).replace(tzinfo=None), onderwerp=f"{len(wijzigingen)} wijzigingen", content=log_text)
+                db.session.add(dc)
+                db.session.commit()
+                logging.info(f"{len(wijzigingen)} wijzigingen opgeslagen.")
+
+                # Update in-memory history for direct view
+                with data_lock:
+                    app_state["change_history"].appendleft({
+                        "timestamp": nu.strftime('%d-%m-%Y %H:%M:%S'),
+                        "onderwerp": f"{len(wijzigingen)} wijzigingen",
+                        "content": log_text
+                    })
+    
+    # 6. Save new state for next time
+    save_state_for_comparison({"bestellingen": nieuwe_bestellingen})
     logging.info("--- Run Voltooid ---")
 
 def main_task():
@@ -455,8 +549,18 @@ def home():
                     "timestamp": pytz.utc.localize(s.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
                     "content_data": s.content_data
                 }
+            # Load history too
+            changes = DetectedChange.query.order_by(DetectedChange.timestamp.desc()).limit(10).all()
+            app_state["change_history"] = deque()
+            for c in changes:
+                app_state["change_history"].append({
+                    "timestamp": pytz.utc.localize(c.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+                    "onderwerp": c.onderwerp,
+                    "content": c.content
+                })
         except: pass
-    return render_template('index.html', snapshot=app_state["latest_snapshot"], changes=[], secret_key=os.environ.get('SECRET_KEY'))
+    
+    return render_template('index.html', snapshot=app_state["latest_snapshot"], changes=list(app_state["change_history"]), secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/force-snapshot', methods=['POST'])
 @basic_auth.required
@@ -477,11 +581,28 @@ def status_check():
 
 @app.route('/logboek')
 @basic_auth.required
-def logboek(): return render_template('logboek.html', changes=[], search_term="", all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
+def logboek():
+    search_term = request.args.get('q', '')
+    query = DetectedChange.query.order_by(DetectedChange.timestamp.desc())
+    if search_term:
+        query = query.filter(DetectedChange.content.ilike(f'%{search_term}%'))
+    
+    db_changes = query.limit(50).all()
+    formatted = []
+    for c in db_changes:
+        formatted.append({
+            "timestamp": pytz.utc.localize(c.timestamp).astimezone(pytz.timezone('Europe/Brussels')).strftime('%d-%m-%Y %H:%M:%S'),
+            "onderwerp": c.onderwerp,
+            "content": c.content
+        })
+        
+    return render_template('logboek.html', changes=formatted, search_term=search_term, all_ships=[], secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/statistieken')
 @basic_auth.required
-def statistieken(): return render_template('statistieken.html', stats={}, secret_key=os.environ.get('SECRET_KEY'))
+def statistieken():
+    # Simple stats placeholder to avoid crash
+    return render_template('statistieken.html', stats={"total_changes": 0}, secret_key=os.environ.get('SECRET_KEY'))
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
