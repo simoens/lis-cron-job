@@ -115,7 +115,8 @@ def login(session):
         logging.error(f"Error during login: {e}")
         return False
 
-# --- IMO SCRAPER ---
+# --- DE KERN: IMO & BEWEGINGEN ---
+
 def haal_imo_nummer(session, soup_met_details):
     imo = None
     try:
@@ -148,7 +149,6 @@ def haal_imo_nummer(session, soup_met_details):
         
     return imo
 
-# --- BEWEGINGEN UITLEZEN MET REGEX ---
 def haal_bewegingen_direct_regex(session, reis_id):
     if not reis_id: return None
     try:
@@ -203,11 +203,13 @@ def parse_table_from_soup(soup):
     return res
 
 def haal_bestellingen_en_details(session):
-    logging.info("--- Running haal_bestellingen_en_details (v108: History Fix) ---")
+    logging.info("--- Running haal_bestellingen_en_details (v110: Relevant Changes Only) ---")
     url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
     
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu = datetime.now(brussels_tz)
+    
+    # Tijdsgrenzen voor fetch optimalisatie (ruimer dan display filters om randgevallen te pakken)
     grens_in = nu + timedelta(hours=8)
     grens_in_verleden = nu - timedelta(hours=8)
     
@@ -316,18 +318,47 @@ def is_mpet_ship(schip_dict):
     x = schip_dict.get('Exit Point', '').lower()
     return 'mpet' in e or 'mpet' in x
 
-def filter_snapshot_schepen(bestellingen, session, nu):
-    gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
+# --- RELEVANTIE CHECKER VOOR FILTERS EN LOGBOEK ---
+def is_relevant_for_dashboard(schip, nu):
+    """
+    Bepaalt of een schip zichtbaar zou zijn op het dashboard op dit moment.
+    Gebruikt de strikte tijdsfilters.
+    """
+    if not is_mpet_ship(schip): return False
+    
+    stype = schip.get("Type")
+    besteltijd_str = schip.get('Besteltijd')
+    
+    try:
+        bt = parse_besteltijd(besteltijd_str)
+        if bt.year == 1970: return False
+        bt = pytz.timezone('Europe/Brussels').localize(bt)
+    except: return False
     
     grens_uit = nu + timedelta(hours=16)
     grens_in_verleden = nu - timedelta(hours=8)
     grens_in = nu + timedelta(hours=8)
     grens_verplaatsing = nu + timedelta(hours=8)
     
-    details_fetched = 0
+    if stype == 'I':
+        return grens_in_verleden <= bt <= grens_in
+    elif stype == 'U':
+        return nu <= bt <= grens_uit
+    elif stype == 'V':
+        return nu <= bt <= grens_verplaatsing
+        
+    return False
 
+def filter_snapshot_schepen(bestellingen, session, nu):
+    gefilterd = {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}
+    
     for b in bestellingen:
-        # VESSELFINDER URL BOUWEN
+        # Check eerst relevantie voor we dure logica doen
+        if not is_relevant_for_dashboard(b, nu): continue
+        
+        stype = b.get("Type")
+        
+        # URL Logic
         schip_naam = b.get('Schip', '')
         if b.get('IMO'):
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={b['IMO']}"
@@ -335,68 +366,61 @@ def filter_snapshot_schepen(bestellingen, session, nu):
              clean_name = re.sub(r'[\s\xa0]+', ' ', schip_naam)
              clean_name = re.sub(r'\s*\(d\)\s*', '', clean_name, flags=re.IGNORECASE).strip()
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
-
-        if not is_mpet_ship(b): continue
         
-        stype = b.get("Type")
-        besteltijd_str = b.get('Besteltijd')
-        
-        try:
-            bt = parse_besteltijd(besteltijd_str)
-            if bt.year == 1970: continue 
-            bt = pytz.timezone('Europe/Brussels').localize(bt)
-        except: continue
-        
+        # ETA Logic
         b['berekende_eta'] = 'N/A'
         
         if stype == 'I':
-             if grens_in_verleden <= bt <= grens_in:
-                if 'Details_ETA' in b:
-                    b['berekende_eta'] = f"Bewegingen: {b['Details_ETA']}"
-                if b['berekende_eta'] == 'N/A':
-                    rta = b.get('RTA', '').strip()
-                    if rta:
-                        m = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta)
-                        if m: 
-                            if "SA/ZV" in rta or "CP" in rta: b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
-                            else: b['berekende_eta'] = f"RTA: {m.group(1)}"
-                        else: b['berekende_eta'] = f"RTA: {rta[:20]}"
-                if b['berekende_eta'] == 'N/A':
+            if 'Details_ETA' in b:
+                b['berekende_eta'] = f"Bewegingen: {b['Details_ETA']}"
+            if b['berekende_eta'] == 'N/A':
+                rta = b.get('RTA', '').strip()
+                if rta:
+                    m = re.search(r"(\d{2}/\d{2}\s+\d{2}:\d{2})", rta)
+                    if m: 
+                        if "SA/ZV" in rta or "CP" in rta: b['berekende_eta'] = f"RTA (CP): {m.group(1)}"
+                        else: b['berekende_eta'] = f"RTA: {m.group(1)}"
+                    else: b['berekende_eta'] = f"RTA: {rta[:20]}"
+            if b['berekende_eta'] == 'N/A':
+                 # Herbereken datum voor calc
+                 try:
+                     bt = parse_besteltijd(b.get('Besteltijd'))
+                     bt = pytz.timezone('Europe/Brussels').localize(bt)
                      eta = bt + timedelta(hours=6)
                      b['berekende_eta'] = f"Calculated: {eta.strftime('%d/%m/%y %H:%M')}"
-                
-                gefilterd['INKOMEND'].append(b)
-        
-        elif stype == 'U':
-             if nu <= bt <= grens_uit: gefilterd['UITGAAND'].append(b)
-        elif stype == 'V':
-             if nu <= bt <= grens_verplaatsing: gefilterd['VERPLAATSING'].append(b)
+                 except: pass
 
+        # Status Logic
         b['status_flag'] = 'normal'
-        diff = (bt - nu).total_seconds()
-        if diff < 0: b['status_flag'] = 'past_due'
-        elif diff < 3600: b['status_flag'] = 'warning_soon'
-        elif diff < 5400: b['status_flag'] = 'due_soon'
+        try:
+            bt = parse_besteltijd(b.get('Besteltijd'))
+            bt = pytz.timezone('Europe/Brussels').localize(bt)
+            diff = (bt - nu).total_seconds()
+            if diff < 0: b['status_flag'] = 'past_due'
+            elif diff < 3600: b['status_flag'] = 'warning_soon'
+            elif diff < 5400: b['status_flag'] = 'due_soon'
+        except: pass
 
-    logging.info(f"Totaal details opgehaald voor {details_fetched} inkomende schepen.")
+        # Sorteren in bakjes (we weten al dat ze relevant zijn)
+        if stype == 'I': gefilterd['INKOMEND'].append(b)
+        elif stype == 'U': gefilterd['UITGAAND'].append(b)
+        elif stype == 'V': gefilterd['VERPLAATSING'].append(b)
 
     gefilterd["INKOMEND"].sort(key=lambda x: parse_besteltijd(x.get('Besteltijd')))
     return gefilterd
 
-# --- 4. WIJZIGINGEN DETECTIE ---
+# --- 4. WIJZIGINGEN DETECTIE (AANGEPAST) ---
 def filter_dubbele_schepen(bestellingen):
     unieke_schepen = {}
     for b in bestellingen:
         schip_naam_raw = b.get('Schip')
         if not schip_naam_raw: continue
         schip_naam_gekuist = re.sub(r'\s*\(d\)\s*$', '', schip_naam_raw).strip()
-        if schip_naam_gekuist in unieke_schepen:
-            unieke_schepen[schip_naam_gekuist] = b
-        else:
-            unieke_schepen[schip_naam_gekuist] = b
+        unieke_schepen[schip_naam_gekuist] = b
     return list(unieke_schepen.values())
 
-def vergelijk_bestellingen(oude, nieuwe):
+def vergelijk_bestellingen(oude, nieuwe, nu):
+    """Vergelijkt oude en nieuwe lijst, FILTERT op relevantie voor dashboard."""
     oude_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(oude) if b.get('Schip')}
     nieuwe_dict = {re.sub(r'\s*\(d\)\s*$', '', b.get('Schip', '')).strip(): b for b in filter_dubbele_schepen(nieuwe) if b.get('Schip')}
     
@@ -405,21 +429,29 @@ def vergelijk_bestellingen(oude, nieuwe):
     
     wijzigingen = []
     
-    # Nieuw
+    # Nieuw: Alleen als het direct op dashboard verschijnt
     for name in (nieuwe_names - oude_names):
-        if is_mpet_ship(nieuwe_dict[name]):
-            wijzigingen.append({'Schip': name, 'status': 'NIEUW', 'details': nieuwe_dict[name]})
+        schip = nieuwe_dict[name]
+        if is_relevant_for_dashboard(schip, nu):
+            wijzigingen.append({'Schip': name, 'status': 'NIEUW', 'details': schip})
             
     # Gewijzigd
     for name in (nieuwe_names.intersection(oude_names)):
         n_best = nieuwe_dict[name]
         o_best = oude_dict[name]
-        if not is_mpet_ship(n_best): continue
+        
+        # Check of schip relevant is OF was
+        # (Als het relevant was en nu niet meer, is het eigenlijk 'verdwenen' van dashboard, maar dat loggen we niet als change per se, tenzij tijd verandert)
+        # We loggen alleen als de NIEUWE status relevant is, of als de wijziging het relevant maakt.
+        if not is_relevant_for_dashboard(n_best, nu): continue
         
         diff = {}
-        for k in ['Besteltijd', 'Loods', 'RTA', 'berekende_eta']:
-            if n_best.get(k) != o_best.get(k):
-                diff[k] = {'oud': o_best.get(k), 'nieuw': n_best.get(k)}
+        for k in ['Besteltijd', 'Loods', 'RTA', 'Details_ETA']:
+            # Details_ETA is nieuw, dus even checken
+            val_n = n_best.get(k)
+            val_o = o_best.get(k)
+            if val_n != val_o:
+                diff[k] = {'oud': val_o, 'nieuw': val_n}
         if diff:
             wijzigingen.append({'Schip': name, 'status': 'GEWIJZIGD', 'wijzigingen': diff})
             
@@ -439,7 +471,6 @@ def format_wijzigingen_email(wijzigingen):
             body.append(line)
     return "\n\n".join(body)
 
-# --- DATABASE LOAD/SAVE HERSTELD ---
 def load_state_for_comparison():
     try:
         bestellingen_obj = KeyValueStore.query.get('bestellingen')
@@ -499,9 +530,9 @@ def main():
          logging.error(f"DB Error: {e}")
          db.session.rollback()
 
-    # Change Detection
+    # Change Detection (MET TIJDFILTER)
     if oude_bestellingen:
-        wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe)
+        wijzigingen = vergelijk_bestellingen(oude_bestellingen, nieuwe, nu)
         if wijzigingen:
             log_text = format_wijzigingen_email(wijzigingen)
             if log_text:
@@ -543,7 +574,6 @@ def home():
                     "content": c.content
                 })
         except: pass
-    
     return render_template('index.html', snapshot=app_state["latest_snapshot"], changes=list(app_state["change_history"]), secret_key=os.environ.get('SECRET_KEY'))
 
 @app.route('/force-snapshot', methods=['POST'])
@@ -580,7 +610,6 @@ def logboek():
             "content": c.content
         })
         
-    # Dropdown vulling (simpel)
     all_ships_query = Snapshot.query.order_by(Snapshot.timestamp.desc()).limit(5).all()
     unique_ships = set()
     for s in all_ships_query:
@@ -607,6 +636,15 @@ def statistieken():
             stats["total_incoming"] = len(s.content_data.get('INKOMEND', []))
             stats["total_outgoing"] = len(s.content_data.get('UITGAAND', []))
             stats["total_shifting"] = len(s.content_data.get('VERPLAATSING', []))
+
+        # Top ships via raw SQL of python (python is makkelijker hier)
+        changes_objs = DetectedChange.query.filter(DetectedChange.timestamp >= seven_days_ago_utc).all()
+        cnt = Counter()
+        rgx = re.compile(r"(?:NIEUW:|WIJZIGING:)\s+([^(]+?)\s+(?:\(|$)")
+        for c in changes_objs:
+            found = rgx.findall(c.content)
+            for f in found: cnt[f.strip()] += 1
+        stats["top_ships"] = cnt.most_common(5)
 
     except: pass
     return render_template('statistieken.html', stats=stats, secret_key=os.environ.get('SECRET_KEY'))
