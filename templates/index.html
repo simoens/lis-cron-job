@@ -7,36 +7,62 @@
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; }
         .container { max-width: 1200px; margin: 20px auto; background-color: #fff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); overflow: hidden; }
+        
+        /* Header */
         .header-bar { background-color: #343a40; color: white; padding: 20px 30px; }
         .header-bar::after { content: ""; display: table; clear: both; }
         .header-bar h1 { margin: 0; padding: 0; font-size: 1.8em; float: left; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
+        
+        /* Knoppen */
         .header-buttons { float: right; display: flex; gap: 10px; align-items: center; }
         .button { background-color: #f0c14b; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 0.9em; font-weight: bold; text-transform: uppercase; text-decoration: none; }
         .button:hover { background-color: #5a6268; }
+        .button:disabled { background-color: #6c757d; cursor: not-allowed; opacity: 0.7; }
+
         .content-box { padding: 10px 30px 30px 30px; }
+        
+        /* Koppen */
         h2 { font-size: 1.4em; border-left: 5px solid #f0c14b; padding-left: 15px; margin-top: 25px; margin-bottom: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
         h3 { margin-top: 25px; font-size: 1.1em; background-color: #f0c14b; color: #343a40; padding: 8px 10px; border-radius: 5px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
+        
+        /* Tabel */
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; table-layout: fixed; }
         th, td { border: 1px solid #ddd; padding: 10px; text-align: left; word-wrap: break-word; }
         th { background-color: #f2f2f2; }
         tr:nth-child(even) { background-color: #f9f9f9; }
         
+        /* Statussen */
         tr.pilot-assigned, tr.pilot-assigned:nth-child(even) { background-color: #dff0d8; font-weight: 500; }
         tr.status-due-soon, tr.status-due-soon:nth-child(even) { background-color: #fff3e0; font-weight: 500; }
         tr.status-warning-soon, tr.status-warning-soon:nth-child(even) { background-color: #ffebee; font-weight: 500; animation: pulse-red 2s ease-in-out infinite; }
         tr.status-past-due, tr.status-past-due:nth-child(even) { background-color: #ffcdd2; font-weight: 500; }
         
-        /* Link styling in table */
+        /* Links */
         td a { color: #007bff; text-decoration: none; font-weight: 600; }
         td a:hover { text-decoration: underline; color: #0056b3; }
-        td a::after { content: " ↗"; font-size: 0.8em; } /* Extern link icoontje */
+        td a::after { content: " ↗"; font-size: 0.8em; } 
 
         @keyframes pulse-red { 0% { background-color: #ffebee; } 50% { background-color: #ffcdd2; } 100% { background-color: #ffebee; } }
+        
+        /* Wijzigingen Lijst (Footer van pagina) */
+        .change-item { background-color: #fdfdfd; border: 1px solid #eee; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
+        .change-header { font-weight: bold; color: #333; margin-bottom: 10px; font-size: 0.9em; color: #666; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #f4f4f4; padding: 15px; border-radius: 5px; font-family: "Courier New", Courier, monospace; font-size: 0.9em; border: 1px solid #eee; margin: 0; }
+        
+        /* Toast Pop-up */
+        .toast-notification { position: fixed; bottom: 20px; right: 20px; background-color: #fff; border: 1px solid #ddd; border-left: 5px solid #007bff; box-shadow: 0 4px 12px rgba(0,0,0,0.15); padding: 20px; border-radius: 8px; z-index: 1000; display: none; max-width: 400px; }
+        .toast-header { font-weight: bold; font-size: 1.1em; color: #333; margin-bottom: 10px; }
+        .toast-body pre { margin: 0; max-height: 200px; overflow-y: auto; font-size: 0.85em; }
+        .toast-close { position: absolute; top: 10px; right: 15px; font-size: 1.5em; font-weight: bold; color: #aaa; cursor: pointer; line-height: 1; }
+        .toast-close:hover { color: #000; }
+
         .version-footer { text-align: right; padding: 10px 30px; color: #adb5bd; font-size: 0.8em; border-top: 1px solid #eee; background-color: #fbfbfb; }
     </style>
 </head>
 <body>
+
     <div class="container">
+        
         <div class="header-bar">
             <div class="header-buttons">
                 <a href="{{ url_for('statistieken') }}" class="button" style="background-color: #6c757d;">Statistieken</a>
@@ -48,11 +74,13 @@
             </div>
             <h1>LIS Dashboard</h1>
         </div>
+
         <div class="content-box">
             <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: -10px;">
                 <h2>LIS SNAPSHOT</h2>
                 <p style="color: #666;" id="timestamp-display">(Laatste update op: {{ snapshot.timestamp }})</p>
             </div>
+
             {% if snapshot.content_data %}
                 <div class="snapshot-content">
                     <h3>INKOMENDE SCHEPEN</h3>
@@ -63,7 +91,6 @@
                                 {% for schip in snapshot.content_data.INKOMEND %}
                                 <tr class="{% if schip.Loods == 'Loods werd toegewezen' %}pilot-assigned{% elif schip.status_flag == 'past_due' %}status-past-due{% elif schip.status_flag == 'warning_soon' %}status-warning-soon{% elif schip.status_flag == 'due_soon' %}status-due-soon{% endif %}">
                                     <td>
-                                        <!-- HIER IS DE WIJZIGING: Link naar VesselFinder -->
                                         <a href="{{ schip.vesselfinder_url }}" target="_blank" title="Bekijk op VesselFinder">{{ schip.Schip }}</a>
                                     </td>
                                     <td>{{ schip.Besteltijd }}</td>
@@ -106,20 +133,101 @@
             {% else %}
                 <p>Wachten op data...</p>
             {% endif %}
+
+            <h2>RECENTE WIJZIGINGEN (max 10)</h2>
+            {% if changes %}
+                {% for change in changes %}
+                    <div class="change-item">
+                        <div class="change-header">[{{ change.timestamp }}] - {{ change.onderwerp }}</div>
+                        <pre>{{ change.content }}</pre>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>Nog geen wijzigingen gedetecteerd.</p>
+            {% endif %}
         </div>
-        <div class="version-footer">Versie 102</div>
+        
+        <div class="version-footer">Versie 111 (JS Fix)</div>
     </div>
+
+    <!-- POPUP CONTAINER -->
+    <div id="change-toast" class="toast-notification">
+        <span id="toast-close-btn" class="toast-close">&times;</span>
+        <div id="toast-header" class="toast-header"></div>
+        <div id="toast-body" class="toast-body"><pre></pre></div>
+    </div>
+    <audio id="notification-sound" src="https://actions.google.com/sounds/v1/basic_sounds/bell_tink.ogg" preload="auto"></audio>
+
+    <!-- Data container om syntax errors in JS te voorkomen -->
+    <script id="latest-change-data" type="application/json">
+        {{ changes[0] | tojson if changes else "null" }}
+    </script>
+
     <script>
+        function getDisplayedTimestamp() { const el = document.getElementById('timestamp-display'); return el ? el.innerText.replace('(Laatste update op: ', '').replace(')', '').trim() : null; }
+        const currentTimestamp = getDisplayedTimestamp();
+
+        // Auto-refresh elke minuut
+        if (currentTimestamp) { 
+            setInterval(async () => { 
+                try { 
+                    const r = await fetch('/status'); 
+                    if (!r.ok) return; 
+                    const d = await r.json(); 
+                    if (d.timestamp && d.timestamp !== "N/A" && d.timestamp !== currentTimestamp) location.reload(); 
+                } catch (e) {} 
+            }, 60000); 
+        }
+        
+        // Pop-up logica
+        document.addEventListener('DOMContentLoaded', () => {
+            const dataScript = document.getElementById('latest-change-data');
+            let latestChange = null;
+            
+            if (dataScript) {
+                try {
+                    latestChange = JSON.parse(dataScript.textContent);
+                } catch(e) {
+                    console.error("Fout bij parsen change data", e);
+                }
+            }
+
+            if (latestChange) {
+                const lc = { 
+                    timestamp: latestChange.timestamp, 
+                    subject: latestChange.onderwerp, 
+                    content: latestChange.content 
+                };
+                const sk = 'seenChangeTimestamp';
+                
+                // Als de timestamp van de laatste wijziging anders is dan wat we lokaal hebben opgeslagen: Toon popup
+                if (lc.timestamp !== localStorage.getItem(sk)) {
+                    document.getElementById('toast-header').innerText = lc.subject;
+                    document.querySelector('#toast-body pre').innerText = lc.content;
+                    document.getElementById('change-toast').style.display = 'block';
+                    document.getElementById('notification-sound').play().catch(e=>{});
+                    
+                    document.getElementById('toast-close-btn').onclick = () => { 
+                        document.getElementById('change-toast').style.display = 'none'; 
+                        localStorage.setItem(sk, lc.timestamp); 
+                    };
+                }
+            }
+        });
+        
+        // Forceer knop logica
         const forceForm = document.getElementById('force-snapshot-form');
         const forceButton = document.getElementById('force-snapshot-button');
-        forceForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            forceButton.disabled = true;
-            forceButton.innerText = "Bezig...";
-            await fetch(forceForm.action, { method: 'POST', body: new FormData(forceForm) });
-            setTimeout(() => { location.reload(); }, 5000);
-        });
-        setTimeout(() => location.reload(), 60000);
+        if (forceForm) {
+            forceForm.addEventListener('submit', async (e) => {
+                e.preventDefault(); 
+                forceButton.disabled = true; 
+                forceButton.innerText = "Bezig...";
+                await fetch(forceForm.action, { method: 'POST', body: new FormData(forceForm) });
+                // Wacht 5 seconden en herlaad dan
+                setTimeout(() => { location.reload(); }, 5000);
+            });
+        }
     </script>
 </body>
 </html>
