@@ -102,8 +102,11 @@ def login(session):
             ev_field = soup.find('input', {'name': '__EVENTVALIDATION'})
 
             if not vs_field:
-                logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. Site geeft mogelijk een foutmelding of captcha.")
-                time.sleep(5) # Wacht even voor de volgende poging
+                logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. HTTP Status: {r.status_code}")
+                # Print de eerste 500 karakters van de pagina om te zien wat we wél krijgen
+                snippet = r.text[:500].replace('\n', ' ') 
+                logging.warning(f"Pagina inhoud (snippet): {snippet}...")
+                time.sleep(5) 
                 continue
 
             data = {
