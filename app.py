@@ -94,7 +94,8 @@ def login(session):
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             session.headers.update(headers)
             
-            r = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
+            # URL Aangepast naar nieuw domein
+            r = session.get("https://lisscheldemonden.eu/Login.aspx", timeout=30)
             soup = BeautifulSoup(r.content, 'lxml')
             
             # Veilig zoeken naar de ASP.NET velden
@@ -103,10 +104,9 @@ def login(session):
 
             if not vs_field:
                 logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. HTTP Status: {r.status_code}")
-                # Print de eerste 500 karakters van de pagina om te zien wat we wél krijgen
                 snippet = r.text[:500].replace('\n', ' ') 
                 logging.warning(f"Pagina inhoud (snippet): {snippet}...")
-                time.sleep(5) 
+                time.sleep(5) # Wacht even voor de volgende poging
                 continue
 
             data = {
@@ -121,7 +121,8 @@ def login(session):
             # Kleine pauze om menselijk gedrag na te bootsen
             time.sleep(1)
             
-            r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=data, timeout=30)
+            # URL Aangepast naar nieuw domein
+            r = session.post("https://lisscheldemonden.eu/Login.aspx", data=data, timeout=30)
             
             if "Login.aspx" not in r.url:
                 logging.info("LOGIN SUCCESSFUL!")
@@ -146,7 +147,8 @@ def haal_imo_nummer(session, soup_met_details):
         
         if match:
             schepen_db_id = match.group(1)
-            detail_url = f"https://lis.loodswezen.be/Lis/Framework/DcDataPage.aspx?control=schepen&ID={schepen_db_id}"
+            # URL Aangepast naar nieuw domein
+            detail_url = f"https://lisscheldemonden.eu/Framework/DcDataPage.aspx?control=schepen&ID={schepen_db_id}"
             
             r = session.get(detail_url, timeout=10)
             imo_soup = BeautifulSoup(r.content, 'lxml')
@@ -173,8 +175,10 @@ def haal_imo_nummer(session, soup_met_details):
 def haal_bewegingen_direct_regex(session, reis_id):
     if not reis_id: return None
     try:
-        url = f"https://lis.loodswezen.be/Lis/Bewegingen.aspx?ReisId={reis_id}"
-        session.headers.update({'Referer': "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"})
+        # URL Aangepast naar nieuw domein
+        url = f"https://lisscheldemonden.eu/Bewegingen.aspx?ReisId={reis_id}"
+        # URL Aangepast naar nieuw domein
+        session.headers.update({'Referer': "https://lisscheldemonden.eu/Loodsbestellingen.aspx"})
         r = session.get(url, timeout=20)
         html_text = r.text
         
@@ -225,7 +229,8 @@ def parse_table_from_soup(soup):
 
 def haal_bestellingen_en_details(session):
     logging.info("--- Running haal_bestellingen_en_details (v110: Relevant Changes Only) ---")
-    url = "https://lis.loodswezen.be/Lis/Loodsbestellingen.aspx"
+    # URL Aangepast naar nieuw domein
+    url = "https://lisscheldemonden.eu/Loodsbestellingen.aspx"
     
     brussels_tz = pytz.timezone('Europe/Brussels')
     nu = datetime.now(brussels_tz)
