@@ -4,16 +4,16 @@ import logging
 from datetime import datetime, timedelta
 import re
 import os
-import json 
+import json
 from collections import deque, Counter
 import pytz
 from flask import Flask, render_template, request, abort, redirect, url_for, jsonify
 import threading
 import time
-from flask_sqlalchemy import SQLAlchemy 
-import psycopg2 
+from flask_sqlalchemy import SQLAlchemy
+import psycopg2
 from flask_basicauth import BasicAuth
-from werkzeug.middleware.proxy_fix import ProxyFix 
+from werkzeug.middleware.proxy_fix import ProxyFix
 from urllib.parse import quote
 
 # --- 1. CONFIGURATIE ---
@@ -23,10 +23,10 @@ USER = os.environ.get('LIS_USER')
 PASS = os.environ.get('LIS_PASS')
 
 app_state = {
-    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}}, 
+    "latest_snapshot": {"timestamp": "Nog niet uitgevoerd", "content_data": {"INKOMEND": [], "UITGAAND": [], "VERPLAATSING": []}},
     "change_history": deque(maxlen=10)
 }
-data_lock = threading.Lock() 
+data_lock = threading.Lock()
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -39,8 +39,8 @@ if uri and uri.startswith("postgres://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['BASIC_AUTH_USERNAME'] = 'mpet'
-app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!' 
-app.config['BASIC_AUTH_FORCE'] = False 
+app.config['BASIC_AUTH_PASSWORD'] = os.environ.get('ADMIN_PASSWORD') or 'Mpet2025!'
+app.config['BASIC_AUTH_FORCE'] = False
 
 basic_auth = BasicAuth(app)
 db = SQLAlchemy(app)
@@ -56,7 +56,7 @@ class DetectedChange(db.Model):
     timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     onderwerp = db.Column(db.String(200))
     content = db.Column(db.Text)
-    type = db.Column(db.String(10)) 
+    type = db.Column(db.String(10))
 
 class KeyValueStore(db.Model):
     key = db.Column(db.String(50), primary_key=True)
@@ -73,7 +73,7 @@ except Exception as e:
 
 def parse_besteltijd(besteltijd_str):
     """Probeert datums te parsen, tolerant voor formaten."""
-    DEFAULT_TIME = datetime(1970, 1, 1) 
+    DEFAULT_TIME = datetime(1970, 1, 1)
     if not besteltijd_str: return DEFAULT_TIME
     
     clean_str = re.sub(r'\s+', ' ', besteltijd_str.strip())
@@ -87,33 +87,51 @@ def parse_besteltijd(besteltijd_str):
     return DEFAULT_TIME
 
 def login(session):
-    try:
-        logging.info("Login attempt started...")
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session.headers.update(headers)
-        
-        r = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
-        soup = BeautifulSoup(r.content, 'lxml')
-        
-        data = {
-            '__VIEWSTATE': soup.find('input', {'name': '__VIEWSTATE'})['value'],
-            'ctl00$ContentPlaceHolder1$login$uname': USER,
-            'ctl00$ContentPlaceHolder1$login$password': PASS,
-            'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
-        }
-        val = soup.find('input', {'name': '__EVENTVALIDATION'})
-        if val: data['__EVENTVALIDATION'] = val['value']
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"Login attempt {attempt + 1} started...")
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            session.headers.update(headers)
             
-        r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=data, timeout=30)
-        
-        if "Login.aspx" not in r.url:
-            logging.info("LOGIN SUCCESSFUL!")
-            return True
-        logging.error("Login failed.")
-        return False
-    except Exception as e:
-        logging.error(f"Error during login: {e}")
-        return False
+            r = session.get("https://lis.loodswezen.be/Lis/Login.aspx", timeout=30)
+            soup = BeautifulSoup(r.content, 'lxml')
+            
+            # Veilig zoeken naar de ASP.NET velden
+            vs_field = soup.find('input', {'name': '__VIEWSTATE'})
+            ev_field = soup.find('input', {'name': '__EVENTVALIDATION'})
+
+            if not vs_field:
+                logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. Site geeft mogelijk een foutmelding of captcha.")
+                time.sleep(5) # Wacht even voor de volgende poging
+                continue
+
+            data = {
+                '__VIEWSTATE': vs_field['value'],
+                'ctl00$ContentPlaceHolder1$login$uname': USER,
+                'ctl00$ContentPlaceHolder1$login$password': PASS,
+                'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
+            }
+            if ev_field:
+                data['__EVENTVALIDATION'] = ev_field['value']
+                
+            # Kleine pauze om menselijk gedrag na te bootsen
+            time.sleep(1)
+            
+            r = session.post("https://lis.loodswezen.be/Lis/Login.aspx", data=data, timeout=30)
+            
+            if "Login.aspx" not in r.url:
+                logging.info("LOGIN SUCCESSFUL!")
+                return True
+            else:
+                logging.error("Login mislukt: Check je LIS_USER en LIS_PASS.")
+                return False # Bij foute credentials heeft retry geen zin
+
+        except Exception as e:
+            logging.error(f"Fout tijdens login poging {attempt + 1}: {e}")
+            time.sleep(5)
+            
+    return False
 
 # --- DE KERN: IMO & BEWEGINGEN ---
 
@@ -363,7 +381,7 @@ def filter_snapshot_schepen(bestellingen, session, nu):
         if b.get('IMO'):
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={b['IMO']}"
         else:
-             clean_name = re.sub(r'[\s\xa0]+', ' ', schip_naam)
+             clean_name = re.sub(r'[\s]+', ' ', schip_naam)
              clean_name = re.sub(r'\s*\(d\)\s*', '', clean_name, flags=re.IGNORECASE).strip()
              b['vesselfinder_url'] = f"https://www.vesselfinder.com/vessels?name={quote(clean_name)}"
         
@@ -497,19 +515,19 @@ def save_state_for_comparison(data):
 # --- MAIN ---
 def main():
     if not all([USER, PASS]):
-        logging.critical("FATAL: Geen user/pass!")
+        logging.critical("FATAL: Geen LIS_USER of LIS_PASS gevonden in omgevingsvariabelen!")
         return
     
     oude_bestellingen = load_state_for_comparison()
     
     session = requests.Session()
     if not login(session):
-        logging.error("Login mislukt.")
+        logging.error("Login definitief mislukt na meerdere pogingen.")
         return
     
     nieuwe = haal_bestellingen_en_details(session)
     if not nieuwe:
-        logging.error("Geen bestellingen.")
+        logging.error("Geen bestellingen gevonden na succesvolle login.")
         return
     
     logging.info("Snapshot genereren...")
