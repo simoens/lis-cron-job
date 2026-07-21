@@ -25,28 +25,27 @@
         h2 { font-size: 1.4em; border-left: 5px solid #f0c14b; padding-left: 15px; margin-top: 25px; margin-bottom: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
         h3 { margin-top: 25px; font-size: 1.1em; background-color: #f0c14b; color: #343a40; padding: 8px 10px; border-radius: 5px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
         
-        /* Power BI Responsive Container */
-        .powerbi-wrapper {
-            position: relative;
-            width: 100%;
-            padding-bottom: 47.48%; /* Verhouding 541.25 / 1140 */
-            height: 0;
-            overflow: hidden;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-            margin-top: 15px;
-            margin-bottom: 25px;
-            background-color: #f9f9f9;
-        }
+/* Power BI Wrapper (Afgesneden op alleen de bovenste tabel) */
+.powerbi-wrapper {
+    position: relative;
+    width: 100%;
+    height: 240px; /* Vaste hoogte: precies genoeg voor de bovenste tabel */
+    overflow: hidden; /* Verbergt de rest van de Power BI pagina */
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    margin-top: 15px;
+    margin-bottom: 25px;
+    background-color: #fff;
+}
 
-        .powerbi-wrapper iframe {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            border: 0;
-        }
+.powerbi-wrapper iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 800px; /* Zorgt dat de iframe zelf niet krimpt, alleen het 'venster' */
+    border: 0;
+}
 
         /* Tabel */
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; table-layout: fixed; }
