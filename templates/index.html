@@ -25,27 +25,27 @@
         h2 { font-size: 1.4em; border-left: 5px solid #f0c14b; padding-left: 15px; margin-top: 25px; margin-bottom: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
         h3 { margin-top: 25px; font-size: 1.1em; background-color: #f0c14b; color: #343a40; padding: 8px 10px; border-radius: 5px; font-weight: 400; text-transform: uppercase; letter-spacing: 1.5px; }
         
-/* Power BI Wrapper (Afgesneden op alleen de bovenste tabel) */
-.powerbi-wrapper {
-    position: relative;
-    width: 100%;
-    height: 1000px; /* Vaste hoogte: precies genoeg voor de bovenste tabel */
-    overflow: hidden; /* Verbergt de rest van de Power BI pagina */
-    border-radius: 5px;
-    border: 1px solid #ddd;
-    margin-top: 15px;
-    margin-bottom: 25px;
-    background-color: #fff;
-}
+        /* Power BI Wrapper (Afgesneden op alleen de bovenste tabel) */
+        .powerbi-wrapper {
+            position: relative;
+            width: 100%;
+            height: 320px; /* Bepaalt de zichtbare hoogte (afgesneden op tabel 1) */
+            overflow: hidden; /* Verbergt de rest van de pagina */
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            margin-top: 15px;
+            margin-bottom: 25px;
+            background-color: #fff;
+        }
 
-.powerbi-wrapper iframe {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 800px; /* Zorgt dat de iframe zelf niet krimpt, alleen het 'venster' */
-    border: 0;
-}
+        .powerbi-wrapper iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 800px; /* Behoudt de originele schaal van het rapport */
+            border: 0;
+        }
 
         /* Tabel */
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; table-layout: fixed; }
@@ -158,11 +158,13 @@
 
             <!-- OPS EXECUTION DASHBOARD (POWER BI) -->
             <h2>OPS EXECUTION DASHBOARD</h2>
-<iframe title="Ops Execution dashboard" 
-    src="https://app.powerbi.com/reportEmbed?reportId=8c38d6fd-f2d6-49d0-9302-bd79d473c0fc&appId=b2c5c70d-1346-40a1-8bc1-93ba88ca31a4&autoAuth=true&ctid=bc1b92b9-5dc9-49be-995b-c97eb515a1d3&pageName=ReportSection?ctid=bc1b92b9-5dc9-49be-995b-c97eb515a1d3&navContentPaneEnabled=false&filterPaneEnabled=false" 
-    frameborder="0" 
-    allowFullScreen="true">
-</iframe>
+            <div class="powerbi-wrapper">
+                <iframe title="Ops Execution dashboard" 
+                    src="https://app.powerbi.com/reportEmbed?reportId=8c38d6fd-f2d6-49d0-9302-bd79d473c0fc&appId=b2c5c70d-1346-40a1-8bc1-93ba88ca31a4&autoAuth=true&ctid=bc1b92b9-5dc9-49be-995b-c97eb515a1d3&navContentPaneEnabled=false&filterPaneEnabled=false" 
+                    frameborder="0" 
+                    allowFullScreen="true">
+                </iframe>
+            </div>
 
             <h2>RECENTE WIJZIGINGEN (max 10)</h2>
             {% if changes %}
