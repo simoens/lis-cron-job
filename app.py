@@ -96,6 +96,11 @@ def login(session):
             
             # URL Aangepast naar nieuw domein
             r = session.get("https://lisscheldemonden.eu/Login.aspx", timeout=30)
+            
+            # --- EXTRA DEBUG INFORMATIE ---
+            logging.info(f"HTTP Status code van login pagina: {r.status_code}")
+            # -----------------------------
+
             soup = BeautifulSoup(r.content, 'lxml')
             
             # Veilig zoeken naar de ASP.NET velden
@@ -104,7 +109,7 @@ def login(session):
 
             if not vs_field:
                 logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. HTTP Status: {r.status_code}")
-                snippet = r.text[:500].replace('\n', ' ') 
+                snippet = r.text[:1000].replace('\n', ' ')  
                 logging.warning(f"Pagina inhoud (snippet): {snippet}...")
                 time.sleep(5) # Wacht even voor de volgende poging
                 continue
@@ -128,7 +133,7 @@ def login(session):
                 logging.info("LOGIN SUCCESSFUL!")
                 return True
             else:
-                logging.error("Login mislukt: Check je LIS_USER en LIS_PASS.")
+                logging.error(f"Login mislukt: Check je LIS_USER en LIS_PASS. Responshandler URL: {r.url}")
                 return False # Bij foute credentials heeft retry geen zin
 
         except Exception as e:
