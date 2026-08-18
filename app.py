@@ -94,49 +94,42 @@ def login(session):
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             session.headers.update(headers)
             
-            # URL Aangepast naar nieuw domein
             r = session.get("https://lisscheldemonden.eu/Login.aspx", timeout=30)
-            
-            # Extra debug informatie voor status
             logging.info(f"HTTP Status code van login pagina: {r.status_code}")
 
             soup = BeautifulSoup(r.content, 'lxml')
             
-            # Veilig zoeken naar de ASP.NET velden
             vs_field = soup.find('input', {'name': '__VIEWSTATE'})
             ev_field = soup.find('input', {'name': '__EVENTVALIDATION'})
 
             if not vs_field:
                 logging.warning(f"Poging {attempt + 1}: Kon __VIEWSTATE niet vinden. HTTP Status: {r.status_code}")
-                snippet = r.text[:1000].replace('\n', ' ')  
-                logging.warning(f"Pagina inhoud (snippet): {snippet}...")
-                time.sleep(5) # Wacht even voor de volgende poging
+                time.sleep(5)
                 continue
 
-            # Wachtwoord URL-encoden zodat speciale tekens zoals * niet misvormd raken
-            encoded_pass = quote(PASS, safe='') if PASS else ''
-
+            # Stuur het wachtwoord direct mee zonder quote()
             data = {
                 '__VIEWSTATE': vs_field['value'],
                 'ctl00$ContentPlaceHolder1$login$uname': USER,
-                'ctl00$ContentPlaceHolder1$login$password': encoded_pass,
+                'ctl00$ContentPlaceHolder1$login$password': PASS,
                 'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
             }
             if ev_field:
                 data['__EVENTVALIDATION'] = ev_field['value']
                 
-            # Kleine pauze om menselijk gedrag na te bootsen
             time.sleep(1)
             
-            # URL Aangepast naar nieuw domein
+            # Voer de POST uit
             r = session.post("https://lisscheldemonden.eu/Login.aspx", data=data, timeout=30)
             
             if "Login.aspx" not in r.url:
                 logging.info("LOGIN SUCCESSFUL!")
                 return True
             else:
-                logging.error(f"Login mislukt: Check je LIS_USER en LIS_PASS. Responshandler URL: {r.url}")
-                return False # Bij foute credentials heeft retry geen zin
+                logging.error(f"Login mislukt. URL: {r.url}")
+                # Log even of de velden wel zijn meegegeven (zonder het wachtwoord zelf te tonen inlog)
+                logging.error(f"Debug - User meegegeven: {bool(USER)}, Pass lengte: {len(PASS) if PASS else 0}")
+                return False
 
         except Exception as e:
             logging.error(f"Fout tijdens login poging {attempt + 1}: {e}")
