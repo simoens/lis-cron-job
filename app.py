@@ -97,9 +97,8 @@ def login(session):
             # URL Aangepast naar nieuw domein
             r = session.get("https://lisscheldemonden.eu/Login.aspx", timeout=30)
             
-            # --- EXTRA DEBUG INFORMATIE ---
+            # Extra debug informatie voor status
             logging.info(f"HTTP Status code van login pagina: {r.status_code}")
-            # -----------------------------
 
             soup = BeautifulSoup(r.content, 'lxml')
             
@@ -114,10 +113,13 @@ def login(session):
                 time.sleep(5) # Wacht even voor de volgende poging
                 continue
 
+            # Wachtwoord URL-encoden zodat speciale tekens zoals * niet misvormd raken
+            encoded_pass = quote(PASS, safe='') if PASS else ''
+
             data = {
                 '__VIEWSTATE': vs_field['value'],
                 'ctl00$ContentPlaceHolder1$login$uname': USER,
-                'ctl00$ContentPlaceHolder1$login$password': PASS,
+                'ctl00$ContentPlaceHolder1$login$password': encoded_pass,
                 'ctl00$ContentPlaceHolder1$login$btnInloggen': 'Inloggen'
             }
             if ev_field:
